@@ -72,11 +72,13 @@ final class ConfigValidator {
                 issues.append(.init(severity: .error, message: "vm.source.image is required for OCI sources."))
             }
         case .local:
-            let path = stripFilePrefix(vm.source.resolvedSource)
+            let path = Config.expandPath(stripFilePrefix(vm.source.path ?? ""))
             if path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 issues.append(.init(severity: .error, message: "vm.source.path is required for local sources."))
             } else if !FileManager.default.fileExists(atPath: path) {
                 issues.append(.init(severity: .error, message: "Local VM path does not exist: \(path)."))
+            } else if Config.localVMName(path) == nil {
+                issues.append(.init(severity: .error, message: "Local VM path must be inside \(Config.tartVMsDirectory) so tart can clone it by name: \(path)."))
             }
         }
 

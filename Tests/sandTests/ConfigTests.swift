@@ -165,4 +165,26 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.runners.last?.vm.source.resolvedSource, "file://\(home)/vm-b")
         XCTAssertEqual(config.runners.first?.healthCheck?.command, "true")
     }
+
+    func testLocalSourceUnderTartVMsResolvesToVMName() {
+        let tartHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        setenv("TART_HOME", tartHome.path, 1)
+        defer { unsetenv("TART_HOME") }
+        let source = Config.VMSource(type: .local, image: nil, path: tartHome.appendingPathComponent("vms/base-vm").path)
+        XCTAssertEqual(source.resolvedSource, "base-vm")
+    }
+
+    func testLocalSourceWithFileURLUnderTartVMsResolvesToVMName() {
+        let tartHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        setenv("TART_HOME", tartHome.path, 1)
+        defer { unsetenv("TART_HOME") }
+        let source = Config.VMSource(type: .local, image: nil, path: "file://" + tartHome.appendingPathComponent("vms/base-vm").path)
+        XCTAssertEqual(source.resolvedSource, "base-vm")
+    }
+
+    func testLocalSourceUnderDefaultTartHomeResolvesToVMName() {
+        unsetenv("TART_HOME")
+        let source = Config.VMSource(type: .local, image: nil, path: "~/.tart/vms/base-vm")
+        XCTAssertEqual(source.resolvedSource, "base-vm")
+    }
 }

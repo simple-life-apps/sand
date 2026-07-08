@@ -84,12 +84,14 @@ struct Runner: Sendable {
         let vm = config.vm
         let provisionerConfig = config.provisioner
         let source = vm.source.resolvedSource
-        logger.info("prepare source \(source)")
-        do {
-            try await tart.prepare(source: source)
-        } catch {
-            logger.error("prepare source \(source) failed: \(String(describing: error))")
-            throw error
+        if vm.source.type == .oci {
+            logger.info("prepare source \(source)")
+            do {
+                try await tart.prepare(source: source)
+            } catch {
+                logger.error("prepare source \(source) failed: \(String(describing: error))")
+                throw error
+            }
         }
         do {
             if try await tart.isRunning(name: name) {

@@ -79,6 +79,62 @@ final class ConfigValidatorTests: XCTestCase {
         XCTAssertTrue(issues.contains(ConfigValidationIssue(severity: .error, message: "runner runner-1: healthCheck.delay must be greater than or equal to 0.")))
     }
 
+    func testLocalSourceOutsideTartVMsIsRejected() throws {
+        let vmDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: vmDir, withIntermediateDirectories: true)
+        let vm = Config.VM(
+            source: Config.VMSource(type: .local, image: nil, path: vmDir.path),
+            hardware: nil,
+            mounts: [],
+            cache: nil,
+            run: .default,
+            diskSizeGb: nil,
+            ssh: .standard
+        )
+        let runner = Config.RunnerConfig(
+            name: "runner-1",
+            vm: vm,
+            provisioner: Config.Provisioner(type: .script, script: .init(run: "echo ok"), github: nil),
+            preRun: nil,
+            postRun: nil,
+            stopAfter: nil,
+            healthCheck: nil
+        )
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.contains(ConfigValidationIssue(
+            severity: .error,
+            message: "runner runner-1: Local VM path must be inside \(Config.tartVMsDirectory) so tart can clone it by name: \(vmDir.path)."
+        )))
+    }
+
+    func testLocalSourceUnderTartVMsIsValid() throws {
+        let tartHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        setenv("TART_HOME", tartHome.path, 1)
+        defer { unsetenv("TART_HOME") }
+        let vmDir = tartHome.appendingPathComponent("vms/base-vm")
+        try FileManager.default.createDirectory(at: vmDir, withIntermediateDirectories: true)
+        let vm = Config.VM(
+            source: Config.VMSource(type: .local, image: nil, path: vmDir.path),
+            hardware: nil,
+            mounts: [],
+            cache: nil,
+            run: .default,
+            diskSizeGb: nil,
+            ssh: .standard
+        )
+        let runner = Config.RunnerConfig(
+            name: "runner-1",
+            vm: vm,
+            provisioner: Config.Provisioner(type: .script, script: .init(run: "echo ok"), github: nil),
+            preRun: nil,
+            postRun: nil,
+            stopAfter: nil,
+            healthCheck: nil
+        )
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.isEmpty, "unexpected issues: \(issues)")
+    }
+
     func testDuplicateRunnerNamesAreRejected() {
         let vm = Config.VM(
             source: Config.VMSource(type: .oci, image: "ghcr.io/acme/vm:latest", path: nil),

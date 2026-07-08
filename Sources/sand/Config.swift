@@ -74,7 +74,7 @@ struct Config: Decodable, Sendable {
             case .oci:
                 return image ?? ""
             case .local:
-                return Config.expandFileURL(path ?? "")
+                return Config.localVMName(path ?? "") ?? Config.expandFileURL(path ?? "")
             }
         }
 
@@ -379,6 +379,23 @@ struct Config: Decodable, Sendable {
             return (path as NSString).expandingTildeInPath
         }
         return path
+    }
+
+    static var tartVMsDirectory: String {
+        let tartHome = getenv("TART_HOME").map { expandPath(String(cString: $0)) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.path + "/.tart"
+        return tartHome + "/vms"
+    }
+
+    static func localVMName(_ path: String) -> String? {
+        let prefix = "file://"
+        let raw = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
+        let url = URL(fileURLWithPath: expandPath(raw)).standardizedFileURL
+        guard url.deletingLastPathComponent().path == tartVMsDirectory else {
+            return nil
+        }
+        let name = url.lastPathComponent
+        return name.isEmpty || name == "/" ? nil : name
     }
 
     static func expandFileURL(_ path: String) -> String {
