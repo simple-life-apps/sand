@@ -94,7 +94,6 @@ runners:
         image: ghcr.io/cirruslabs/macos-runner:tahoe
       cache:
         host: ~/.cache/sand/actions-runner
-        name: sand-cache
     provisioner:
       type: github
       config:
@@ -109,14 +108,14 @@ runners:
       delay: 60
 ```
 
-To enable runner caching, set `vm.cache`. The GitHub provisioner reuses the Actions runner archive from that mount between restarts; on a cache miss it downloads the tarball and stores it in the mounted directory. On macOS guests, the cache directory resolves to `/Volumes/My Shared Files/<name>` (with `name` acting as the share name).
+To enable runner caching, set `vm.cache`. The host downloads the Actions runner tarball, verifies its SHA-256 against the digest published by the GitHub releases API, stores it in `vm.cache.host` alongside a `.sha256` sidecar file, and delivers it into each VM over scp. Guests never download the runner and have no access to the cache directory, so a compromised job cannot poison it. The cache keeps the 5 newest runner versions; older ones are pruned automatically.
 
-Sand resolves the latest Actions runner version at runtime via the GitHub API and uses that version for both the download URL and the cache filename. If version resolution fails and a cache directory is available, sand falls back to the newest cached runner tarball it can find.
+Sand resolves the latest Actions runner version via the GitHub API and re-checks at most once a day. If the API is unreachable, sand falls back to the newest verified tarball in the cache. Without `vm.cache`, the tarball is downloaded and verified on every boot.
 
-Common pitfalls:
+Notes:
 - `vm.cache.host` must be a directory (missing paths are created; file paths are rejected).
 - `vm.cache` is ignored unless the provisioner type is `github`.
-- Linux runner cache requires virtiofs support in the guest. The default Ubuntu images from cirruslabs do not provide virtiofs, so cache mounts on Ubuntu are not supported.
+- `vm.cache.name` is deprecated and ignored.
 
 ### Custom provisioner script
 

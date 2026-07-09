@@ -45,11 +45,11 @@ struct Doctor: AsyncParsableCommand {
                 message: "Missing required dependencies in PATH: \(missing.joined(separator: ", "))."
             ))
         } else {
-            let optionalMissing = DependencyChecker.missingCommands(["scp"])
-            if !optionalMissing.isEmpty {
+            let missingRequired = DependencyChecker.missingCommands(["scp"])
+            if !missingRequired.isEmpty {
                 issues.append(.init(
-                    severity: .warning,
-                    message: "scp not found in PATH; runner cache preseed will be disabled."
+                    severity: .error,
+                    message: "scp not found in PATH; scp is required to deliver the Actions runner to VMs."
                 ))
             }
             report("- tart command health")
@@ -110,7 +110,7 @@ struct Doctor: AsyncParsableCommand {
             if !hasRunnerAsset {
                 issues.append(.init(
                     severity: .warning,
-                    message: "Runner cache directory has no actions-runner-*.tar.gz at \(hostPath); sand will download the runner on first boot."
+                    message: "Runner cache directory has no actions-runner-*.tar.gz at \(hostPath); sand will download and verify the runner on first boot."
                 ))
             }
         }

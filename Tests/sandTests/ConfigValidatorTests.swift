@@ -9,7 +9,7 @@ final class ConfigValidatorTests: XCTestCase {
             source: Config.VMSource(type: .oci, image: "ghcr.io/acme/vm:latest", path: nil),
             hardware: nil,
             mounts: [],
-            cache: Config.Cache(hostPath: "/tmp/sand-cache", name: "sand-cache"),
+            cache: Config.Cache(hostPath: "/tmp/sand-cache", name: nil),
             run: .default,
             diskSizeGb: nil,
             ssh: .standard
@@ -43,7 +43,7 @@ final class ConfigValidatorTests: XCTestCase {
             source: Config.VMSource(type: .oci, image: "ghcr.io/acme/vm:latest", path: nil),
             hardware: nil,
             mounts: [],
-            cache: Config.Cache(hostPath: "/tmp/sand-cache", name: "sand-cache"),
+            cache: Config.Cache(hostPath: "/tmp/sand-cache", name: nil),
             run: .default,
             diskSizeGb: nil,
             ssh: .standard
@@ -217,7 +217,7 @@ final class ConfigValidatorTests: XCTestCase {
             source: Config.VMSource(type: .oci, image: "ghcr.io/acme/vm:latest", path: nil),
             hardware: nil,
             mounts: [],
-            cache: Config.Cache(hostPath: cacheFile.path, name: "bad/cache"),
+            cache: Config.Cache(hostPath: cacheFile.path, name: "sand-cache"),
             run: .default,
             diskSizeGb: nil,
             ssh: .standard
@@ -237,12 +237,13 @@ final class ConfigValidatorTests: XCTestCase {
             message: "runner runner-1: vm.cache is set but provisioner is not github; cache will be ignored."
         )))
         XCTAssertTrue(issues.contains(ConfigValidationIssue(
-            severity: .error,
-            message: "runner runner-1: vm.cache.name must not contain '/'."
+            severity: .warning,
+            message: "runner runner-1: vm.cache.name is ignored: the runner cache is no longer mounted into VMs."
         )))
         XCTAssertTrue(issues.contains(ConfigValidationIssue(
             severity: .error,
             message: "runner runner-1: vm.cache.host must be a directory: \(cacheFile.path)."
         )))
+        XCTAssertFalse(issues.contains { $0.message.contains("must not contain") })
     }
 }

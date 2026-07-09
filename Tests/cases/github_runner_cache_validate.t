@@ -26,7 +26,6 @@ runners:
         image: ${SAND_E2E_IMAGE}
       cache:
         host: ${cache_dir}
-        name: sand-cache
     provisioner:
       type: github
       config:
@@ -39,3 +38,27 @@ EOF_CONFIG
 
 output=$("$SAND_BIN" validate --config "$config")
 assert_match "Config is valid." "$output"
+
+config_named="$workdir/config_named.yml"
+cat >"$config_named" <<EOF_CONFIG
+runners:
+  - name: ${runner}
+    vm:
+      source:
+        type: oci
+        image: ${SAND_E2E_IMAGE}
+      cache:
+        host: ${cache_dir}
+        name: sand-cache
+    provisioner:
+      type: github
+      config:
+        appId: 1
+        organization: acme
+        repository: null
+        privateKeyPath: ${key_file}
+        runnerName: ${runner}
+EOF_CONFIG
+
+output=$("$SAND_BIN" validate --config "$config_named")
+assert_match "vm.cache.name is ignored" "$output"

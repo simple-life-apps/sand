@@ -50,7 +50,6 @@ runners:
         path: null
       cache:
         host: ~/.cache/sand/actions-runner
-        name: sand-cache
       ssh:
         user: admin
         password: admin

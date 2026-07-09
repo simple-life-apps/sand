@@ -205,8 +205,12 @@ final class ConfigValidator {
                 ))
             }
         }
-        let resolvedName = Config.resolveMountName(hostPath: cache.hostPath, name: cache.name)
-        validateMountName(resolvedName, label: "vm.cache.name", issues: &issues)
+        if let name = cache.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues.append(.init(
+                severity: .warning,
+                message: "vm.cache.name is ignored: the runner cache is no longer mounted into VMs."
+            ))
+        }
     }
 
     private func stripFilePrefix(_ path: String) -> String {
