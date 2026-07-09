@@ -8,14 +8,14 @@ jobs:
   test:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: swift test
   brew:
     runs-on: macos-26
     env:
       HOMEBREW_NO_AUTO_UPDATE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: echo "HOMEBREW_SWIFT=$(xcrun --find swift)" >> "$GITHUB_ENV"
       - run: |
           git switch -c ci-under-test
