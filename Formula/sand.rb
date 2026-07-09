@@ -3,9 +3,9 @@ class Sand < Formula
   homepage "https://github.com/khoi/sand"
   head "https://github.com/simple-life-apps/sand.git", branch: "main"
 
+  depends_on "cirruslabs/cli/tart"
   depends_on :macos
   depends_on "sshpass"
-  depends_on "cirruslabs/cli/tart"
 
   def install
     # Avoid requiring SSH credentials during SwiftPM dependency fetches.
@@ -23,17 +23,30 @@ class Sand < Formula
     bin.install ".build/release/sand"
   end
 
-  test do
-    system bin/"sand", "--help"
+  service do
+    run [opt_bin/"sand", "run", "--config", "sand.yml"]
+    keep_alive true
+    working_dir Dir.home
+    log_path "#{Dir.home}/Library/Logs/sand.log"
+    error_log_path "#{Dir.home}/Library/Logs/sand.err.log"
+    environment_variables PATH: std_service_path_env
   end
 
   def caveats
     <<~EOS
       sand requires macOS 15+ and Tart available in your PATH.
 
+      To start sand automatically at login, create your config at ~/sand.yml
+      and run:
+        brew services start sand
+
       macOS DHCP leases last 24 hours by default, causing IP exhaustion if you
       run more than ~253 VMs per day. To reduce lease time to 10 minutes:
         sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.InternetSharing.default.plist bootpd -dict DHCPLeaseTimeSecs -int 600
     EOS
+  end
+
+  test do
+    system bin/"sand", "--help"
   end
 end
