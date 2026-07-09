@@ -75,12 +75,35 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.runners.first?.provisioner.github?.organization, "acme")
         XCTAssertEqual(config.runners.first?.provisioner.github?.repository, "repo")
         XCTAssertEqual(config.runners.first?.provisioner.github?.extraLabels ?? [], ["fast", "arm64"])
+        XCTAssertNil(config.runners.first?.provisioner.github?.runnerGroup)
         XCTAssertTrue(config.runners.first?.provisioner.github?.privateKeyPath.hasPrefix(home) ?? false)
         XCTAssertTrue(config.runners.first?.preRun?.contains("pre-run") ?? false)
         XCTAssertTrue(config.runners.first?.postRun?.contains("post-run") ?? false)
         XCTAssertEqual(config.runners.first?.healthCheck?.command, "pgrep -f run.sh")
         XCTAssertEqual(config.runners.first?.healthCheck?.interval, 15)
         XCTAssertEqual(config.runners.first?.healthCheck?.delay, 45)
+    }
+
+    func testGitHubProvisionerRunnerGroup() throws {
+        let yaml = """
+        runners:
+          - name: runner-1
+            vm:
+              source:
+                type: oci
+                image: ghcr.io/acme/vm:latest
+            provisioner:
+              type: github
+              config:
+                appId: 42
+                organization: acme
+                privateKeyPath: ~/key.pem
+                runnerName: runner-1
+                runnerGroup: macos runners
+        """
+        let url = try writeTempFile(contents: yaml)
+        let config = try Config.load(path: url.path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.runnerGroup, "macos runners")
     }
 
     func testScriptProvisioner() throws {

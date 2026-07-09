@@ -11,7 +11,8 @@ final class GitHubProvisionerTests: XCTestCase {
             repository: "repo",
             privateKeyPath: "/tmp/key.pem",
             runnerName: "runner-1",
-            extraLabels: ["fast", "arm64"]
+            extraLabels: ["fast", "arm64"],
+            runnerGroup: nil
         )
         let runnerVersion = "2.999.0"
         let script = provisioner.script(
@@ -35,7 +36,8 @@ final class GitHubProvisionerTests: XCTestCase {
             repository: nil,
             privateKeyPath: "/tmp/key.pem",
             runnerName: "runner-1",
-            extraLabels: nil
+            extraLabels: nil,
+            runnerGroup: nil
         )
         let runnerVersion = "2.999.0"
         let script = provisioner.script(
@@ -49,6 +51,27 @@ final class GitHubProvisionerTests: XCTestCase {
         XCTAssertTrue(joined.contains("actions-runner-${runner_os}-${runner_arch}"))
         XCTAssertTrue(joined.contains("version=\"\(runnerVersion)\""))
         XCTAssertFalse(joined.contains("runner cache"))
+        XCTAssertFalse(joined.contains("--runnergroup"))
+    }
+
+    func testScriptWithRunnerGroup() {
+        let provisioner = GitHubProvisioner()
+        let config = GitHubProvisionerConfig(
+            appId: 1,
+            organization: "org",
+            repository: nil,
+            privateKeyPath: "/tmp/key.pem",
+            runnerName: "runner-1",
+            extraLabels: nil,
+            runnerGroup: "macos runners"
+        )
+        let script = provisioner.script(
+            config: config,
+            runnerToken: "token",
+            runnerVersion: "2.999.0"
+        )
+        let joined = script.joined(separator: "\n")
+        XCTAssertTrue(joined.contains("--runnergroup 'macos runners'"))
     }
 
     func testScriptIncludesRunnerCacheLogic() {
@@ -59,7 +82,8 @@ final class GitHubProvisionerTests: XCTestCase {
             repository: "repo",
             privateKeyPath: "/tmp/key.pem",
             runnerName: "runner-1",
-            extraLabels: nil
+            extraLabels: nil,
+            runnerGroup: nil
         )
         let runnerVersion = "2.999.0"
         let script = provisioner.script(
@@ -85,7 +109,8 @@ final class GitHubProvisionerTests: XCTestCase {
             repository: "repo",
             privateKeyPath: "/tmp/key.pem",
             runnerName: "runner-1",
-            extraLabels: nil
+            extraLabels: nil,
+            runnerGroup: nil
         )
         let cacheDirectory = "/var/tmp/runner-cache"
         let runnerVersion = "2.999.0"

@@ -167,6 +167,13 @@ final class ConfigValidator {
             if let repository = github.repository, repository.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 issues.append(.init(severity: .warning, message: "provisioner.config.repository is set but empty."))
             }
+            if let runnerGroup = github.runnerGroup {
+                if runnerGroup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    issues.append(.init(severity: .error, message: "provisioner.config.runnerGroup must not be empty when provided."))
+                } else if github.repository != nil {
+                    issues.append(.init(severity: .error, message: "provisioner.config.runnerGroup requires organization-level registration (remove repository)."))
+                }
+            }
         }
     }
 

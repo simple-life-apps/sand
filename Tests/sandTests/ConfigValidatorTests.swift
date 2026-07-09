@@ -20,7 +20,8 @@ final class ConfigValidatorTests: XCTestCase {
             repository: nil,
             privateKeyPath: keyURL.path,
             runnerName: "runner-1",
-            extraLabels: nil
+            extraLabels: nil,
+            runnerGroup: nil
         )
         let runner = Config.RunnerConfig(
             name: "runner-1",
@@ -34,6 +35,61 @@ final class ConfigValidatorTests: XCTestCase {
         let config = Config(runners: [runner])
         let issues = ConfigValidator().validate(config)
         XCTAssertTrue(issues.isEmpty)
+    }
+
+    private func githubRunner(repository: String?, runnerGroup: String?) throws -> Config.RunnerConfig {
+        let keyURL = try writeTempFile(contents: "key", suffix: ".pem")
+        let vm = Config.VM(
+            source: Config.VMSource(type: .oci, image: "ghcr.io/acme/vm:latest", path: nil),
+            hardware: nil,
+            mounts: [],
+            cache: Config.Cache(hostPath: "/tmp/sand-cache", name: "sand-cache"),
+            run: .default,
+            diskSizeGb: nil,
+            ssh: .standard
+        )
+        let github = GitHubProvisionerConfig(
+            appId: 1,
+            organization: "acme",
+            repository: repository,
+            privateKeyPath: keyURL.path,
+            runnerName: "runner-1",
+            extraLabels: nil,
+            runnerGroup: runnerGroup
+        )
+        return Config.RunnerConfig(
+            name: "runner-1",
+            vm: vm,
+            provisioner: Config.Provisioner(type: .github, script: nil, github: github),
+            preRun: nil,
+            postRun: nil,
+            stopAfter: nil,
+            healthCheck: nil
+        )
+    }
+
+    func testRunnerGroupWithOrgLevelRegistrationIsValid() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: "macos-runners")
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.isEmpty, "unexpected issues: \(issues)")
+    }
+
+    func testRunnerGroupWithRepositoryIsRejected() throws {
+        let runner = try githubRunner(repository: "repo", runnerGroup: "macos-runners")
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.contains(ConfigValidationIssue(
+            severity: .error,
+            message: "runner runner-1: provisioner.config.runnerGroup requires organization-level registration (remove repository)."
+        )))
+    }
+
+    func testEmptyRunnerGroupIsRejected() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: "  ")
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.contains(ConfigValidationIssue(
+            severity: .error,
+            message: "runner runner-1: provisioner.config.runnerGroup must not be empty when provided."
+        )))
     }
 
     func testInvalidConfigReportsIssues() {

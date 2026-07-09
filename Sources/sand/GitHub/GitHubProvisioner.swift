@@ -5,6 +5,7 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
     let privateKeyPath: String
     let runnerName: String
     let extraLabels: [String]?
+    let runnerGroup: String?
 
     init(
         appId: Int,
@@ -12,7 +13,8 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
         repository: String?,
         privateKeyPath: String,
         runnerName: String,
-        extraLabels: [String]?
+        extraLabels: [String]?,
+        runnerGroup: String?
     ) {
         self.appId = appId
         self.organization = organization
@@ -20,6 +22,7 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
         self.privateKeyPath = privateKeyPath
         self.runnerName = runnerName
         self.extraLabels = extraLabels
+        self.runnerGroup = runnerGroup
     }
 }
 
@@ -34,6 +37,7 @@ struct GitHubProvisioner: Sendable {
     ) -> [String] {
         let labels = labelsString(extraLabels: config.extraLabels)
         let url = runnerURL(organization: config.organization, repository: config.repository)
+        let runnerGroupArg = config.runnerGroup.map { " --runnergroup '\($0)'" } ?? ""
         let cacheScript = runnerCacheScript(cacheDirectory: cacheDirectory)
         return [
             """
@@ -45,7 +49,7 @@ echo $download_url
             "rm -rf ~/actions-runner && mkdir ~/actions-runner",
             "tar xzf ./actions-runner.tar.gz -C ~/actions-runner",
             "echo \"Runner downloaded and extracted\"",
-            "~/actions-runner/config.sh --url \(url) --name \(config.runnerName) --token \(runnerToken) --ephemeral --unattended --replace --labels \(labels)",
+            "~/actions-runner/config.sh --url \(url) --name \(config.runnerName) --token \(runnerToken) --ephemeral --unattended --replace --labels \(labels)\(runnerGroupArg)",
             "echo \"Runner script downloaded, starting ~/actions-runner/run.sh\"",
             "~/actions-runner/run.sh"
         ]
