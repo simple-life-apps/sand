@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: echo "HOMEBREW_SWIFT=$(xcrun --find swift)" >> "$GITHUB_ENV"
+      - run: |
+          git switch -c ci-under-test
+          sed -i '' 's|^  head .*|  head "file://'"$GITHUB_WORKSPACE"'", branch: "ci-under-test"|' Formula/sand.rb
       - run: brew tap-new local/sand
       - run: cp Formula/sand.rb "$(brew --repo local/sand)/Formula/sand.rb"
       - run: brew install --HEAD local/sand/sand
