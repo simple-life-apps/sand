@@ -19,7 +19,7 @@ jobs:
       - run: echo "HOMEBREW_SWIFT=$(xcrun --find swift)" >> "$GITHUB_ENV"
       - run: |
           git switch -c ci-under-test
-          sed -i '' 's|^  head .*|  head "file://'"$GITHUB_WORKSPACE"'", branch: "ci-under-test"|' Formula/sand.rb
+          sed -i '' 's|^  head .*|  head "file://'"$GITHUB_WORKSPACE"'", using: :git, branch: "ci-under-test"|' Formula/sand.rb
       - run: brew trust cirruslabs/cli aws/tap
       - run: brew tap cirruslabs/cli
       - run: brew tap-new local/sand
