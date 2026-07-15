@@ -25,6 +25,7 @@ class Sand < Formula
 
   service do
     run [opt_bin/"sand", "run", "--config", "sand.yml"]
+    process_type :interactive
     keep_alive true
     working_dir Dir.home
     log_path "#{Dir.home}/Library/Logs/sand.log"
