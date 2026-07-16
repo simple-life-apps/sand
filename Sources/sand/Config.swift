@@ -176,23 +176,27 @@ struct Config: Decodable, Sendable {
     struct RunOptions: Decodable, Sendable {
         let noGraphics: Bool
         let noClipboard: Bool
+        let rootDiskOpts: String?
 
         static let `default` = RunOptions(noGraphics: true, noClipboard: false)
 
-        init(noGraphics: Bool, noClipboard: Bool) {
+        init(noGraphics: Bool, noClipboard: Bool, rootDiskOpts: String? = nil) {
             self.noGraphics = noGraphics
             self.noClipboard = noClipboard
+            self.rootDiskOpts = rootDiskOpts
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.noGraphics = try container.decodeIfPresent(Bool.self, forKey: .noGraphics) ?? true
             self.noClipboard = try container.decodeIfPresent(Bool.self, forKey: .noClipboard) ?? false
+            self.rootDiskOpts = try container.decodeIfPresent(String.self, forKey: .rootDiskOpts)
         }
 
         private enum CodingKeys: String, CodingKey {
             case noGraphics
             case noClipboard
+            case rootDiskOpts
         }
     }
 

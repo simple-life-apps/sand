@@ -32,6 +32,7 @@ struct Tart: Sendable {
         let noAudio: Bool
         let noGraphics: Bool
         let noClipboard: Bool
+        var rootDiskOpts: String? = nil
 
         static let `default` = RunOptions(directoryMounts: [], noAudio: false, noGraphics: true, noClipboard: false)
     }
@@ -110,6 +111,9 @@ struct Tart: Sendable {
         }
         if options.noClipboard {
             arguments.append("--no-clipboard")
+        }
+        if let rootDiskOpts = options.rootDiskOpts, !rootDiskOpts.isEmpty {
+            arguments.append("--root-disk-opts=\(rootDiskOpts)")
         }
         for mount in options.directoryMounts {
             arguments.append("--dir")

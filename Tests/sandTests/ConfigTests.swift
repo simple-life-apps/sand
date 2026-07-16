@@ -25,6 +25,7 @@ final class ConfigTests: XCTestCase {
               run:
                 noGraphics: false
                 noClipboard: true
+                rootDiskOpts: caching=cached,sync=none
               diskSizeGb: 80
               ssh:
                 user: admin
@@ -65,6 +66,7 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.runners.first?.vm.mounts.first?.mode, .ro)
         XCTAssertEqual(config.runners.first?.vm.run.noGraphics, false)
         XCTAssertEqual(config.runners.first?.vm.run.noClipboard, true)
+        XCTAssertEqual(config.runners.first?.vm.run.rootDiskOpts, "caching=cached,sync=none")
         XCTAssertEqual(config.runners.first?.vm.diskSizeGb, 80)
         XCTAssertEqual(config.runners.first?.vm.ssh.user, "admin")
         XCTAssertEqual(config.runners.first?.vm.ssh.password, "admin")
