@@ -222,6 +222,17 @@ struct Runner: Sendable {
                 let token = try await github.runnerRegistrationToken()
                 let uniqueRunnerName = GitHubProvisioner.uniqueRunnerName(base: githubConfig.runnerName)
                 logger.info("runner registration name: \(uniqueRunnerName)")
+                await shutdownCoordinator.setDeregistration { [github, logger] in
+                    do {
+                        if try await github.deleteRunner(named: uniqueRunnerName) {
+                            logger.info("deregistered runner \(uniqueRunnerName)")
+                        } else {
+                            logger.debug("runner \(uniqueRunnerName) already removed")
+                        }
+                    } catch {
+                        logger.warning("failed to deregister runner \(uniqueRunnerName): \(String(describing: error))")
+                    }
+                }
                 let cacheManager = RunnerCacheManager(cacheDirectory: runnerCacheHostPath, logger: logger)
                 try await preseedRunner(cacheManager: cacheManager, ssh: ssh)
                 let commands = provisioner.script(config: githubConfig, runnerToken: token, runnerName: uniqueRunnerName)
