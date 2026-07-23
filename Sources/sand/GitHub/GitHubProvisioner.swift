@@ -27,7 +27,12 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
 }
 
 struct GitHubProvisioner: Sendable {
-    func script(config: GitHubProvisionerConfig, runnerToken: String) -> [String] {
+    static func uniqueRunnerName(base: String) -> String {
+        let suffix = String(format: "%05x", Int.random(in: 0..<0x100000))
+        return "\(base)-\(suffix)"
+    }
+
+    func script(config: GitHubProvisionerConfig, runnerToken: String, runnerName: String) -> [String] {
         let labels = labelsString(extraLabels: config.extraLabels)
         let url = runnerURL(organization: config.organization, repository: config.repository)
         let runnerGroupArg = config.runnerGroup.map { " --runnergroup '\($0)'" } ?? ""
@@ -36,7 +41,7 @@ struct GitHubProvisioner: Sendable {
             "rm -rf ~/actions-runner && mkdir ~/actions-runner",
             "tar xzf ./actions-runner.tar.gz -C ~/actions-runner",
             "echo \"Runner extracted\"",
-            "~/actions-runner/config.sh --url \(url) --name \(config.runnerName) --token \(runnerToken) --ephemeral --unattended --replace --labels \(labels)\(runnerGroupArg)",
+            "~/actions-runner/config.sh --url \(url) --name \(runnerName) --token \(runnerToken) --ephemeral --unattended --replace --labels \(labels)\(runnerGroupArg)",
             "echo \"Runner configured, starting ~/actions-runner/run.sh\"",
             "~/actions-runner/run.sh"
         ]

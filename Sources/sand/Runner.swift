@@ -220,9 +220,11 @@ struct Runner: Sendable {
                 }
                 logger.info("run github provisioner")
                 let token = try await github.runnerRegistrationToken()
+                let uniqueRunnerName = GitHubProvisioner.uniqueRunnerName(base: githubConfig.runnerName)
+                logger.info("runner registration name: \(uniqueRunnerName)")
                 let cacheManager = RunnerCacheManager(cacheDirectory: runnerCacheHostPath, logger: logger)
                 try await preseedRunner(cacheManager: cacheManager, ssh: ssh)
-                let commands = provisioner.script(config: githubConfig, runnerToken: token)
+                let commands = provisioner.script(config: githubConfig, runnerToken: token, runnerName: uniqueRunnerName)
                 let outcome = await runProvisionerCommands(commands, ssh: ssh, healthCheckState: healthCheckState)
                 switch outcome {
                 case .completed:
