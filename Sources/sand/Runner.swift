@@ -581,34 +581,34 @@ struct Runner: Sendable {
                     logger.warning("Failed to check VM \(vmName) running state: \(String(describing: error))")
                 }
                 do {
-                    guard let ip = await resolveHealthCheckIP(name: vmName, interval: healthCheck.interval) else {
-                        self.logger.debug("healthCheck failed to resolve IP; retrying")
-                        continue
-                    }
-                    self.logger.debug("healthCheck resolved IP: \(ip)")
-                    let probe = SSHClient(processRunner: tart.processRunner, host: ip, config: ssh)
-                    let probeCommand = wrapHealthCheckCommand(healthCheck.command)
-                    let result = try await probe.exec(command: probeCommand)
-                    let output = result?.stdout ?? ""
-                    let exitCode = parseHealthCheckExitCode(output: output) ?? 1
-                    self.logger.debug("healthCheck exit code \(exitCode)")
-                    if exitCode == 0 {
-                        sawSuccess = true
-                        self.logger.debug("healthCheck success")
-                    } else {
-                        let filteredOutput = stripHealthCheckMarker(output: output)
-                        let outputLabel = healthCheckLabel.isEmpty ? "healthCheck output" : "healthCheck output (\(healthCheckLabel))"
-                        logIfNonEmpty(label: outputLabel, text: filteredOutput)
-                        let message = "exit code \(exitCode)"
-                        let inStartupGrace = !sawSuccess && Date().timeIntervalSince(activationTime) < startupGrace
-                        if inStartupGrace {
-                            logger.warning("\(healthCheckDescriptor) failed with \(message) during startup grace, retrying")
+                    if let ip = await resolveHealthCheckIP(name: vmName, interval: healthCheck.interval) {
+                        self.logger.debug("healthCheck resolved IP: \(ip)")
+                        let probe = SSHClient(processRunner: tart.processRunner, host: ip, config: ssh)
+                        let probeCommand = wrapHealthCheckCommand(healthCheck.command)
+                        let result = try await probe.exec(command: probeCommand)
+                        let output = result?.stdout ?? ""
+                        let exitCode = parseHealthCheckExitCode(output: output) ?? 1
+                        self.logger.debug("healthCheck exit code \(exitCode)")
+                        if exitCode == 0 {
+                            sawSuccess = true
+                            self.logger.debug("healthCheck success")
                         } else {
-                            logger.warning("\(healthCheckDescriptor) failed with \(message), marking healthCheck failed")
-                            await state.markFailed(message: message)
-                            await control.terminateProvisioning()
-                            return
+                            let filteredOutput = stripHealthCheckMarker(output: output)
+                            let outputLabel = healthCheckLabel.isEmpty ? "healthCheck output" : "healthCheck output (\(healthCheckLabel))"
+                            logIfNonEmpty(label: outputLabel, text: filteredOutput)
+                            let message = "exit code \(exitCode)"
+                            let inStartupGrace = !sawSuccess && Date().timeIntervalSince(activationTime) < startupGrace
+                            if inStartupGrace {
+                                logger.warning("\(healthCheckDescriptor) failed with \(message) during startup grace, retrying")
+                            } else {
+                                logger.warning("\(healthCheckDescriptor) failed with \(message), marking healthCheck failed")
+                                await state.markFailed(message: message)
+                                await control.terminateProvisioning()
+                                return
+                            }
                         }
+                    } else {
+                        logger.warning("healthCheck could not resolve VM IP; retrying next interval")
                     }
                 } catch {
                     logger.warning("\(healthCheckDescriptor) error (will retry): \(String(describing: error))")
