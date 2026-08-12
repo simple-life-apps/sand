@@ -137,6 +137,61 @@ struct OfflineMonitorTests {
         try? FileManager.default.removeItem(at: tempDir)
     }
 
+    @Test func sustainedPollFailuresEscalateToASingleErrorAlarm() async throws {
+        struct PollFailure: Error {}
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let path = tempDir.appendingPathComponent("sand.log").path
+        let sink = try LogFileSink(path: path)
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(1),
+            poll: { throw PollFailure() },
+            onRecycle: { _ in },
+            logger: Logger(label: "test", minimumLevel: .debug, sink: sink)
+        )
+        let task = Task { await monitor.run() }
+        var contents = ""
+        var attempts = 0
+        while !contents.contains("offline recycling is inactive"), attempts < 200 {
+            attempts += 1
+            try? await Task.sleep(for: .milliseconds(5))
+            contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        }
+        task.cancel()
+        await task.value
+        #expect(contents.contains("offline recycling is inactive"))
+        let alarms = contents.split(separator: "\n").filter { $0.contains("offline recycling is inactive") }
+        #expect(alarms.count == 1, "the alarm must fire once, not once per poll")
+    }
+
+    @Test func cancellationMidPollIsNotReportedAsUnknownStatus() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let path = tempDir.appendingPathComponent("sand.log").path
+        let sink = try LogFileSink(path: path)
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .seconds(3600),
+            poll: {
+                try await Task.sleep(for: .seconds(3600))
+                return .notRegistered
+            },
+            onRecycle: { _ in },
+            logger: Logger(label: "test", minimumLevel: .debug, sink: sink)
+        )
+        let task = Task { await monitor.run() }
+        try? await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+        await task.value
+        let contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        #expect(!contents.contains("status unknown"), "teardown must not warn that the GitHub API is unhealthy")
+    }
+
     @Test func cancellationStopsTheLoop() async {
         let recorder = RecycleRecorder()
         let monitor = OfflineMonitor(
