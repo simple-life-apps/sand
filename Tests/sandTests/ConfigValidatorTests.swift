@@ -37,7 +37,30 @@ final class ConfigValidatorTests: XCTestCase {
         XCTAssertTrue(issues.isEmpty)
     }
 
-    private func githubRunner(repository: String?, runnerGroup: String?) throws -> Config.RunnerConfig {
+    func testRecycleAfterOfflineBelowTwoPollIntervalsWarns() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .after(.seconds(30)))
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        let warnings = issues.filter { $0.severity == .warning && $0.message.contains("recycleAfterOffline") }
+        XCTAssertEqual(warnings.count, 1, "unexpected issues: \(issues)")
+    }
+
+    func testRecycleAfterOfflineAtTwoPollIntervalsIsAccepted() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .after(.seconds(120)))
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.isEmpty, "unexpected issues: \(issues)")
+    }
+
+    func testDisabledRecycleAfterOfflineDoesNotWarn() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .disabled)
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.isEmpty, "unexpected issues: \(issues)")
+    }
+
+    private func githubRunner(
+        repository: String?,
+        runnerGroup: String?,
+        recycleAfterOffline: OfflineRecycling = .default
+    ) throws -> Config.RunnerConfig {
         let keyURL = try writeTempFile(contents: "key", suffix: ".pem")
         let vm = Config.VM(
             source: Config.VMSource(type: .oci, image: "ghcr.io/acme/vm:latest", path: nil),
@@ -55,7 +78,8 @@ final class ConfigValidatorTests: XCTestCase {
             privateKeyPath: keyURL.path,
             runnerName: "runner-1",
             extraLabels: nil,
-            runnerGroup: runnerGroup
+            runnerGroup: runnerGroup,
+            recycleAfterOffline: recycleAfterOffline
         )
         return Config.RunnerConfig(
             name: "runner-1",

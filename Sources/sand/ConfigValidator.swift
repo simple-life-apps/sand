@@ -174,8 +174,17 @@ final class ConfigValidator {
                     issues.append(.init(severity: .error, message: "provisioner.config.runnerGroup requires organization-level registration (remove repository)."))
                 }
             }
+            if case let .after(threshold) = github.recycleAfterOffline, threshold < Self.minimumHonorableRecycleAfterOffline {
+                let pollSeconds = OfflineMonitor.defaultPollInterval.components.seconds
+                issues.append(.init(
+                    severity: .warning,
+                    message: "provisioner.config.recycleAfterOffline of \(threshold.components.seconds)s cannot be honored: runner status is polled every \(pollSeconds)s and recycling needs two consecutive offline polls, so the effective threshold is \(pollSeconds * 2)s."
+                ))
+            }
         }
     }
+
+    private static let minimumHonorableRecycleAfterOffline = OfflineMonitor.defaultPollInterval * 2
 
     private func validateRunnerCache(_ runner: Config.RunnerConfig, issues: inout [ConfigValidationIssue]) {
         guard let cache = runner.vm.cache else {

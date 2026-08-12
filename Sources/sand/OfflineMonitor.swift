@@ -1,4 +1,6 @@
 struct OfflineMonitor: Sendable {
+    static let defaultPollInterval: Duration = .seconds(60)
+
     let runnerName: String
     let threshold: Duration
     let pollInterval: Duration

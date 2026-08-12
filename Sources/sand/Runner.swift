@@ -666,7 +666,7 @@ struct Runner: Sendable {
         }
     }
 
-    private static let offlinePollInterval: Duration = .seconds(60)
+    private static let offlinePollInterval: Duration = OfflineMonitor.defaultPollInterval
 
     private func makeOfflineMonitor(
         github: GitHubService,
