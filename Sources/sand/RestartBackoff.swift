@@ -2,6 +2,7 @@ import Foundation
 
 enum RestartReason: Equatable, CustomStringConvertible {
     case healthCheckFailed(String)
+    case runnerOffline(String)
     case ipNotReady
     case sshNotReady
     case stageFailed(String)
@@ -11,6 +12,8 @@ enum RestartReason: Equatable, CustomStringConvertible {
         switch self {
         case let .healthCheckFailed(message):
             return "healthcheck failed: \(message)"
+        case let .runnerOffline(message):
+            return "runner offline: \(message)"
         case .ipNotReady:
             return "ip not ready"
         case .sshNotReady:

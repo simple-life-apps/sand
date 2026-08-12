@@ -37,4 +37,10 @@ final class RestartBackoffTests: XCTestCase {
         XCTAssertEqual(pending.0, 1)
         XCTAssertEqual(next.0, 0)
     }
+
+    func testRunnerOfflineReasonDescriptionAndEquality() {
+        let reason = RestartReason.runnerOffline("runner r-1 offline on GitHub for 600s+")
+        XCTAssertEqual(String(describing: reason), "runner offline: runner r-1 offline on GitHub for 600s+")
+        XCTAssertNotEqual(reason, RestartReason.healthCheckFailed("runner r-1 offline on GitHub for 600s+"))
+    }
 }

@@ -208,10 +208,10 @@ struct Runner: Sendable {
                     await stopHealthCheck(healthCheckTask)
                     await shutdownCoordinator.cleanup(reason: "provisioner failed")
                     throw error
-                case let .healthCheckFailed(message):
-                    await scheduleRestart(reason: .healthCheckFailed(message))
+                case let .monitorFailed(failure):
+                    await scheduleRestart(reason: restartReason(for: failure))
                     await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: "health check failed: \(message)")
+                    await shutdownCoordinator.cleanup(reason: String(describing: restartReason(for: failure)))
                     return
                 }
             case .github:
@@ -253,10 +253,10 @@ struct Runner: Sendable {
                     await stopHealthCheck(healthCheckTask)
                     await shutdownCoordinator.cleanup(reason: "provisioner failed")
                     throw error
-                case let .healthCheckFailed(message):
-                    await scheduleRestart(reason: .healthCheckFailed(message))
+                case let .monitorFailed(failure):
+                    await scheduleRestart(reason: restartReason(for: failure))
                     await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: "health check failed: \(message)")
+                    await shutdownCoordinator.cleanup(reason: String(describing: restartReason(for: failure)))
                     return
                 }
             }
@@ -291,10 +291,10 @@ struct Runner: Sendable {
                 throw error
             }
         }
-        if let message = await healthCheckState.failureMessage() {
-            await scheduleRestart(reason: .healthCheckFailed(message))
+        if let failure = await healthCheckState.failure() {
+            await scheduleRestart(reason: restartReason(for: failure))
             await stopHealthCheck(healthCheckTask)
-            await shutdownCoordinator.cleanup(reason: "health check failed: \(message)")
+            await shutdownCoordinator.cleanup(reason: String(describing: restartReason(for: failure)))
             return
         }
         await restartBackoff.reset()
@@ -573,7 +573,7 @@ struct Runner: Sendable {
                             message = "vm running"
                         }
                         logger.warning("VM \(vmName) not running (\(message)), marking healthCheck failed")
-                        await state.markFailed(message: message)
+                        await state.markFailed(.healthCheck(message))
                         await control.terminateProvisioning()
                         return
                     }
@@ -602,7 +602,7 @@ struct Runner: Sendable {
                                 logger.warning("\(healthCheckDescriptor) failed with \(message) during startup grace, retrying")
                             } else {
                                 logger.warning("\(healthCheckDescriptor) failed with \(message), marking healthCheck failed")
-                                await state.markFailed(message: message)
+                                await state.markFailed(.healthCheck(message))
                                 await control.terminateProvisioning()
                                 return
                             }
@@ -627,13 +627,13 @@ struct Runner: Sendable {
     private enum ProvisionerOutcome {
         case completed(ProcessResult)
         case failed(Error)
-        case healthCheckFailed(String)
+        case monitorFailed(MonitorFailure)
     }
 
     private enum ProvisionerSequenceOutcome {
         case completed
         case failed(Error)
-        case healthCheckFailed(String)
+        case monitorFailed(MonitorFailure)
     }
 
     private func runProvisionerCommands(
@@ -648,8 +648,8 @@ struct Runner: Sendable {
                 continue
             case let .failed(error):
                 return .failed(error)
-            case let .healthCheckFailed(message):
-                return .healthCheckFailed(message)
+            case let .monitorFailed(failure):
+                return .monitorFailed(failure)
             }
         }
         return .completed
@@ -691,14 +691,14 @@ struct Runner: Sendable {
                     }
                     await control.clearProvisioningHandle(handle)
                     return .failed(error)
-                case let .healthCheckFailed(message):
-                    logger.warning("healthCheck failed; terminating provisioner command wait: \(message)")
+                case let .monitorFailed(failure):
+                    logger.warning("monitor failed; terminating provisioner command wait: \(failure.message)")
                     await control.terminateProvisioning()
                     Task.detached {
                         _ = try? await handle.waitAsync()
                     }
                     await control.clearProvisioningHandle(handle)
-                    return .healthCheckFailed(message)
+                    return .monitorFailed(failure)
                 }
             } catch {
                 if await retrySSHIfNeeded(error: error, stage: "provisioner", attempt: &attempt) {
@@ -724,8 +724,8 @@ struct Runner: Sendable {
             }
             group.addTask {
                 do {
-                    let message = try await healthCheckState.waitForFailure()
-                    return .healthCheckFailed(message)
+                    let failure = try await healthCheckState.waitForFailure()
+                    return .monitorFailed(failure)
                 } catch is CancellationError {
                     return nil
                 } catch {
@@ -822,6 +822,15 @@ struct Runner: Sendable {
             return command.first == "sshpass"
         case .invalidCommand:
             return false
+        }
+    }
+
+    private func restartReason(for failure: MonitorFailure) -> RestartReason {
+        switch failure {
+        case let .healthCheck(message):
+            return .healthCheckFailed(message)
+        case let .runnerOffline(message):
+            return .runnerOffline(message)
         }
     }
 
@@ -938,9 +947,9 @@ struct Runner: Sendable {
     }
 
     private func handleStageFailure(_ error: Error, stage: String, healthCheckState: HealthCheckState?) async -> Bool {
-        if let healthCheckState, let message = await healthCheckState.failureMessage() {
-            logger.debug("\(stage) failed while healthCheck already failed: \(message)")
-            await scheduleRestart(reason: .healthCheckFailed(message))
+        if let healthCheckState, let failure = await healthCheckState.failure() {
+            logger.debug("\(stage) failed while monitor already failed: \(failure.message)")
+            await scheduleRestart(reason: restartReason(for: failure))
             return true
         }
         logStageFailure(error, stage: stage)
@@ -974,8 +983,8 @@ struct Runner: Sendable {
             return "completed"
         case .failed:
             return "failed"
-        case .healthCheckFailed:
-            return "healthCheckFailed"
+        case .monitorFailed:
+            return "monitorFailed"
         }
     }
 
@@ -1007,34 +1016,46 @@ struct Runner: Sendable {
     }
 }
 
-private actor HealthCheckState {
-    private var failureMessageStorage: String?
-    private var waiters: [UUID: CheckedContinuation<String, Error>] = [:]
+enum MonitorFailure: Sendable, Equatable {
+    case healthCheck(String)
+    case runnerOffline(String)
 
-    func markFailed(message: String) {
-        if failureMessageStorage == nil {
-            failureMessageStorage = message
+    var message: String {
+        switch self {
+        case let .healthCheck(message), let .runnerOffline(message):
+            return message
+        }
+    }
+}
+
+private actor HealthCheckState {
+    private var failureStorage: MonitorFailure?
+    private var waiters: [UUID: CheckedContinuation<MonitorFailure, Error>] = [:]
+
+    func markFailed(_ failure: MonitorFailure) {
+        if failureStorage == nil {
+            failureStorage = failure
             let pending = waiters
             waiters = [:]
             for continuation in pending.values {
-                continuation.resume(returning: message)
+                continuation.resume(returning: failure)
             }
         }
     }
 
-    func failureMessage() -> String? {
-        failureMessageStorage
+    func failure() -> MonitorFailure? {
+        failureStorage
     }
 
-    func waitForFailure() async throws -> String {
-        if let failureMessageStorage {
-            return failureMessageStorage
+    func waitForFailure() async throws -> MonitorFailure {
+        if let failureStorage {
+            return failureStorage
         }
         let waiterID = UUID()
         return try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
-                if let failureMessageStorage {
-                    continuation.resume(returning: failureMessageStorage)
+                if let failureStorage {
+                    continuation.resume(returning: failureStorage)
                     return
                 }
                 waiters[waiterID] = continuation
