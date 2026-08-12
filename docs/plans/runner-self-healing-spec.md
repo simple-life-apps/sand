@@ -23,8 +23,8 @@ Requirements:
 - Any observation of the runner online resets the timer.
 - Polling starts once the runner is registered (provisioning done); a runner that never
   comes online is recycled when the threshold expires.
-- One config key on the github provisioner: `offlineAfter` (seconds, default 600,
-  `0` disables). Poll interval is fixed (60s).
+- One config key on the github provisioner: `recycleAfterOffline` (seconds, default
+  600, `0` disables). Poll interval is fixed (60s).
 - The restart reason is distinguishable in logs from health check failures.
 
 ## Code errors to fix alongside (all provisioners)
@@ -47,7 +47,8 @@ Requirements:
 ## Acceptance
 
 - Unit-tested offline-timer behavior: unknown freezes, busy never fires, online resets,
-  continuous offline ≥ threshold fires, `offlineAfter: 0` disables.
-- Config decoding/validation and `fixtures/sample_full_config.yml` cover `offlineAfter`.
+  continuous offline ≥ threshold fires, `recycleAfterOffline: 0` disables.
+- Config decoding/validation and `fixtures/sample_full_config.yml` cover
+  `recycleAfterOffline`.
 - Replaying the incident (runner registered, then permanently offline, VM/SSH healthy)
-  recycles the VM within ~`offlineAfter` + one poll interval.
+  recycles the VM within ~`recycleAfterOffline` + one poll interval.
