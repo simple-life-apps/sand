@@ -18,6 +18,7 @@ struct GitHubService: Sendable {
 
     struct AccessTokenResponse: Decodable {
         let token: String
+        let expiresAt: Date
     }
 
     struct RunnerTokenResponse: Decodable {
@@ -40,6 +41,7 @@ struct GitHubService: Sendable {
     let organization: String
     let repository: String?
     let baseURL = URL(string: "https://api.github.com")!
+    let tokenCache = GitHubTokenCache()
 
     func runnerRegistrationToken() async throws -> String {
         let installationId = try await installationID()
@@ -64,9 +66,33 @@ struct GitHubService: Sendable {
     }
 
     func runnerStatus(named name: String) async throws -> RunnerStatus? {
-        let installationId = try await installationID()
-        let accessToken = try await installationAccessToken(installationId: installationId)
-        return try await fetchRunnerStatus(named: name, token: accessToken)
+        do {
+            return try await fetchRunnerStatus(named: name, token: cachedInstallationToken())
+        } catch let GitHubServiceError.httpError(status, _) where status == 401 {
+            await tokenCache.invalidateToken()
+            return try await fetchRunnerStatus(named: name, token: cachedInstallationToken())
+        }
+    }
+
+    private func cachedInstallationToken() async throws -> String {
+        if let token = await tokenCache.validToken(now: Date()) {
+            return token
+        }
+        let installationId: Int
+        if let cached = await tokenCache.cachedInstallationId() {
+            installationId = cached
+        } else {
+            installationId = try await installationID()
+            await tokenCache.store(installationId: installationId)
+        }
+        let jwt = try auth.token(now: Date())
+        let response: AccessTokenResponse = try await request(
+            path: "/app/installations/\(installationId)/access_tokens",
+            method: "POST",
+            token: jwt
+        )
+        await tokenCache.store(token: response.token, expiresAt: response.expiresAt)
+        return response.token
     }
 
     private func fetchRunnerStatus(named name: String, token: String) async throws -> RunnerStatus? {
@@ -102,6 +128,7 @@ struct GitHubService: Sendable {
         let data = try await performRequest(path: path, method: method, token: token)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(T.self, from: data)
     }
 
@@ -148,4 +175,35 @@ struct GitHubService: Sendable {
         return "/orgs/\(organization)/actions/runners"
     }
 
+}
+
+actor GitHubTokenCache {
+    private var installationId: Int?
+    private var token: String?
+    private var expiresAt: Date?
+
+    func cachedInstallationId() -> Int? {
+        installationId
+    }
+
+    func store(installationId: Int) {
+        self.installationId = installationId
+    }
+
+    func validToken(now: Date) -> String? {
+        guard let token, let expiresAt, now < expiresAt.addingTimeInterval(-60) else {
+            return nil
+        }
+        return token
+    }
+
+    func store(token: String, expiresAt: Date) {
+        self.token = token
+        self.expiresAt = expiresAt
+    }
+
+    func invalidateToken() {
+        token = nil
+        expiresAt = nil
+    }
 }
