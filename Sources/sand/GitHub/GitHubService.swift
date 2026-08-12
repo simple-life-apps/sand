@@ -103,13 +103,21 @@ struct GitHubService: Sendable {
     }
 
     private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
-        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
         let list: RunnersListResponse = try await request(
-            path: "\(runnersPath())?name=\(encodedName)",
+            path: runnerLookupPath(named: name),
             method: "GET",
             token: token
         )
         return list.runners.first(where: { $0.name == name })
+    }
+
+    private static let queryValueAllowed = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    )
+
+    private func runnerLookupPath(named name: String) -> String {
+        let encodedName = name.addingPercentEncoding(withAllowedCharacters: Self.queryValueAllowed) ?? name
+        return "\(runnersPath())?name=\(encodedName)"
     }
 
     private func installationID() async throws -> Int {
