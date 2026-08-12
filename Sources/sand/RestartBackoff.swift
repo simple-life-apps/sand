@@ -24,6 +24,23 @@ enum RestartReason: Equatable, CustomStringConvertible {
             return "provisioner exited"
         }
     }
+
+    var backoffKey: String {
+        switch self {
+        case .healthCheckFailed:
+            return "healthCheckFailed"
+        case .runnerOffline:
+            return "runnerOffline"
+        case .ipNotReady:
+            return "ipNotReady"
+        case .sshNotReady:
+            return "sshNotReady"
+        case let .stageFailed(stage):
+            return "stageFailed:\(stage)"
+        case .provisionerExited:
+            return "provisionerExited"
+        }
+    }
 }
 
 struct RestartBackoffPolicy {
@@ -60,12 +77,12 @@ actor RestartBackoff {
 
     @discardableResult
     func schedule(reason: RestartReason) -> TimeInterval {
-        if let lastReason, lastReason == reason {
+        if let lastReason, lastReason.backoffKey == reason.backoffKey {
             attempt += 1
         } else {
             attempt = 1
-            lastReason = reason
         }
+        lastReason = reason
         let rawDelay = policy.baseDelay * pow(policy.multiplier, Double(max(0, attempt - 1)))
         let delay = min(rawDelay, policy.maxDelay)
         pendingDelay = delay
