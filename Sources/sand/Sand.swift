@@ -99,7 +99,6 @@ struct Run: AsyncParsableCommand {
                 Task {
                     await control.terminateProvisioning()
                     await control.cancelHealthCheck()
-                    await control.cancelOfflineMonitor()
                     group.leave()
                 }
             }
