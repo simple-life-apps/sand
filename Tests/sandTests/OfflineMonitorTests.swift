@@ -1,5 +1,15 @@
+import Foundation
 import Testing
 @testable import sand
+
+private actor OfflineThenOnlinePoll {
+    private var calls = 0
+
+    func next() -> GitHubService.RunnerStatus? {
+        calls += 1
+        return GitHubService.RunnerStatus(online: calls > 2, busy: false)
+    }
+}
 
 private actor RecycleRecorder {
     private(set) var messages: [String] = []
@@ -87,6 +97,41 @@ struct OfflineMonitorTests {
         await task.value
         let messages = await recorder.messages
         #expect(messages.isEmpty)
+    }
+
+    @Test func offlineAndRecoveryTransitionsAreLogged() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let path = tempDir.appendingPathComponent("sand.log").path
+        let sink = try LogFileSink(path: path)
+        let poll = OfflineThenOnlinePoll()
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { await poll.next() },
+            onRecycle: { _ in },
+            logger: Logger(label: "test", minimumLevel: .debug, sink: sink)
+        )
+        let task = Task { await monitor.run() }
+        var contents = ""
+        var attempts = 0
+        while !contents.contains("back online after"), attempts < 200 {
+            attempts += 1
+            contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+            if contents.contains("back online after") {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        task.cancel()
+        await task.value
+        #expect(contents.contains("runner r-1 reported offline on GitHub"))
+        #expect(contents.contains("runner r-1 back online after"))
+        #expect(contents.contains("offline monitor poll (runner=r-1"))
+        let transitions = contents.split(separator: "\n").filter { $0.contains("reported offline on GitHub") }
+        #expect(transitions.count == 1, "the offline transition must be logged once per run, not once per poll")
+        try? FileManager.default.removeItem(at: tempDir)
     }
 
     @Test func cancellationStopsTheLoop() async {

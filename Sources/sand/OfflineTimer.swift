@@ -13,6 +13,10 @@ struct OfflineTimer {
         self.threshold = threshold
     }
 
+    var accumulatedOffline: Duration {
+        accumulated
+    }
+
     mutating func observe(_ signal: Signal, at now: ContinuousClock.Instant) -> Bool {
         switch signal {
         case .healthy:

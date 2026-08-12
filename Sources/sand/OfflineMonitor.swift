@@ -13,9 +13,14 @@ struct OfflineMonitor: Sendable {
         return (status.busy || status.online) ? .healthy : .offline
     }
 
+    private static func seconds(_ duration: Duration) -> Int64 {
+        duration.components.seconds
+    }
+
     func run() async {
         let clock = ContinuousClock()
         var timer = OfflineTimer(threshold: threshold)
+        var offlineRun = false
         while !Task.isCancelled {
             let signal: OfflineTimer.Signal
             do {
@@ -27,7 +32,20 @@ struct OfflineMonitor: Sendable {
             if Task.isCancelled {
                 break
             }
-            if timer.observe(signal, at: clock.now) {
+            let accumulatedBeforeObservation = timer.accumulatedOffline
+            let fired = timer.observe(signal, at: clock.now)
+            switch signal {
+            case .offline where !offlineRun:
+                offlineRun = true
+                logger.warning("runner \(runnerName) reported offline on GitHub; recycling after \(Self.seconds(threshold))s accumulated offline")
+            case .healthy where offlineRun:
+                offlineRun = false
+                logger.warning("runner \(runnerName) back online after \(Self.seconds(accumulatedBeforeObservation))s offline")
+            default:
+                break
+            }
+            logger.debug("offline monitor poll (runner=\(runnerName), signal=\(signal), offlineFor=\(Self.seconds(timer.accumulatedOffline))s/\(Self.seconds(threshold))s)")
+            if fired {
                 let message = "runner \(runnerName) offline on GitHub past threshold"
                 logger.warning("\(message); recycling VM")
                 await onRecycle(message)
