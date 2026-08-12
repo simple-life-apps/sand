@@ -123,6 +123,23 @@ final class GitHubServiceTests: XCTestCase {
         XCTAssertEqual(status, .notRegistered)
     }
 
+    func testRunnerStatusRecoversAfterInstallationIsReinstalled() async throws {
+        let session = MockSession()
+        session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
+        session.responses["/app/installations/1/access_tokens"] = (Data("{\"message\":\"Not Found\"}".utf8), 404)
+        let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
+        do {
+            _ = try await service.runnerStatus(named: "r-a3f9c")
+            XCTFail("expected the stale installation to fail the first poll")
+        } catch {}
+
+        session.responses["/orgs/org/installation"] = (Data("{\"id\":2}".utf8), 200)
+        session.responses["/app/installations/2/access_tokens"] = (Data("{\"token\":\"access\",\"expires_at\":\"2030-01-01T00:00:00Z\"}".utf8), 200)
+        session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\",\"status\":\"online\",\"busy\":false}]}".utf8), 200)
+        let status = try await service.runnerStatus(named: "r-a3f9c")
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: false)))
+    }
+
     func testRunnerStatusUnrecognizedWhenStatusFieldAbsent() async throws {
         let session = MockSession()
         session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)

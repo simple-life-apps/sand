@@ -97,11 +97,17 @@ struct GitHubService: Sendable {
             await tokenCache.store(installationId: installationId)
         }
         let jwt = try auth.token(now: Date())
-        let response: AccessTokenResponse = try await request(
-            path: "/app/installations/\(installationId)/access_tokens",
-            method: "POST",
-            token: jwt
-        )
+        let response: AccessTokenResponse
+        do {
+            response = try await request(
+                path: "/app/installations/\(installationId)/access_tokens",
+                method: "POST",
+                token: jwt
+            )
+        } catch {
+            await tokenCache.invalidateInstallationId()
+            throw error
+        }
         await tokenCache.store(token: response.token, expiresAt: response.expiresAt)
         return response.token
     }
@@ -239,5 +245,9 @@ actor GitHubTokenCache {
 
     func invalidateToken() {
         issued = nil
+    }
+
+    func invalidateInstallationId() {
+        installationId = nil
     }
 }
