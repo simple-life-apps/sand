@@ -5,9 +5,9 @@ import Testing
 private actor OfflineThenOnlinePoll {
     private var calls = 0
 
-    func next() -> GitHubService.RunnerStatus? {
+    func next() -> GitHubService.RunnerLookup {
         calls += 1
-        return GitHubService.RunnerStatus(online: calls > 2, busy: false)
+        return .registered(GitHubService.RunnerStatus(connection: calls > 2 ? .online : .offline, busy: false))
     }
 }
 
@@ -30,12 +30,12 @@ private actor PollAlternator {
 
 struct OfflineMonitorTests {
     @Test func signalMapping() {
-        #expect(OfflineMonitor.signal(for: nil) == .offline)
-        #expect(OfflineMonitor.signal(for: .init(online: false, busy: false)) == .offline)
-        #expect(OfflineMonitor.signal(for: .init(online: true, busy: false)) == .healthy)
-        #expect(OfflineMonitor.signal(for: .init(online: true, busy: true)) == .healthy)
+        #expect(OfflineMonitor.signal(for: .notRegistered) == .offline)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .offline, busy: false))) == .offline)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .online, busy: false))) == .healthy)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .online, busy: true))) == .healthy)
         // Busy wins even if GitHub reports the runner offline mid-job.
-        #expect(OfflineMonitor.signal(for: .init(online: false, busy: true)) == .healthy)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .offline, busy: true))) == .healthy)
     }
 
     // Incident replay: registered, then permanently offline (this is the
@@ -46,7 +46,7 @@ struct OfflineMonitorTests {
             runnerName: "r-1",
             threshold: .milliseconds(25),
             pollInterval: .milliseconds(5),
-            poll: { GitHubService.RunnerStatus(online: false, busy: false) },
+            poll: { .registered(GitHubService.RunnerStatus(connection: .offline, busy: false)) },
             onRecycle: { await recorder.record($0) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
@@ -62,7 +62,7 @@ struct OfflineMonitorTests {
             runnerName: "r-1",
             threshold: .milliseconds(25),
             pollInterval: .milliseconds(5),
-            poll: { nil },
+            poll: { .notRegistered },
             onRecycle: { await recorder.record($0) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
@@ -86,7 +86,7 @@ struct OfflineMonitorTests {
                 if await alternator.nextIsError() {
                     throw PollError()
                 }
-                return GitHubService.RunnerStatus(online: true, busy: true)
+                return .registered(GitHubService.RunnerStatus(connection: .online, busy: true))
             },
             onRecycle: { await recorder.record($0) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
@@ -140,7 +140,7 @@ struct OfflineMonitorTests {
             runnerName: "r-1",
             threshold: .seconds(3600),
             pollInterval: .milliseconds(2),
-            poll: { GitHubService.RunnerStatus(online: false, busy: false) },
+            poll: { .registered(GitHubService.RunnerStatus(connection: .offline, busy: false)) },
             onRecycle: { await recorder.record($0) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )

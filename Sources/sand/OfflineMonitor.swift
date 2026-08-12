@@ -2,15 +2,17 @@ struct OfflineMonitor: Sendable {
     let runnerName: String
     let threshold: Duration
     let pollInterval: Duration
-    let poll: @Sendable () async throws -> GitHubService.RunnerStatus?
+    let poll: @Sendable () async throws -> GitHubService.RunnerLookup
     let onRecycle: @Sendable (String) async -> Void
     let logger: Logger
 
-    static func signal(for status: GitHubService.RunnerStatus?) -> OfflineTimer.Signal {
-        guard let status else {
+    static func signal(for lookup: GitHubService.RunnerLookup) -> OfflineTimer.Signal {
+        switch lookup {
+        case .notRegistered:
             return .offline
+        case let .registered(status):
+            return (status.busy || status.connection == .online) ? .healthy : .offline
         }
-        return (status.busy || status.online) ? .healthy : .offline
     }
 
     private static func seconds(_ duration: Duration) -> Int64 {
@@ -33,7 +35,7 @@ struct OfflineMonitor: Sendable {
                 break
             }
             let accumulatedBeforeObservation = timer.accumulatedOffline
-            let fired = timer.observe(signal, at: clock.now)
+            let verdict = timer.observe(signal, at: clock.now)
             switch signal {
             case .offline where !offlineRun:
                 offlineRun = true
@@ -45,7 +47,7 @@ struct OfflineMonitor: Sendable {
                 break
             }
             logger.debug("offline monitor poll (runner=\(runnerName), signal=\(signal), offlineFor=\(Self.seconds(timer.accumulatedOffline))s/\(Self.seconds(threshold))s)")
-            if fired {
+            if verdict == .thresholdReached {
                 let message = "runner \(runnerName) offline on GitHub past threshold"
                 logger.warning("\(message); recycling VM")
                 await onRecycle(message)

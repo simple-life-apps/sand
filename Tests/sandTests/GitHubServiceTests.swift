@@ -87,7 +87,7 @@ final class GitHubServiceTests: XCTestCase {
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\",\"status\":\"online\",\"busy\":true}]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a3f9c")
-        XCTAssertEqual(status, GitHubService.RunnerStatus(online: true, busy: true))
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: true)))
         let listRequest = session.requests.last
         XCTAssertEqual(listRequest?.url?.path, "/orgs/org/actions/runners")
         XCTAssertEqual(listRequest?.url?.query, "name=r-a3f9c")
@@ -100,7 +100,7 @@ final class GitHubServiceTests: XCTestCase {
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\",\"status\":\"online\",\"busy\":false}]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a3f9c")
-        XCTAssertEqual(status, GitHubService.RunnerStatus(online: true, busy: false))
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: false)))
     }
 
     func testRunnerStatusOffline() async throws {
@@ -110,7 +110,7 @@ final class GitHubServiceTests: XCTestCase {
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\",\"status\":\"offline\",\"busy\":false}]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a3f9c")
-        XCTAssertEqual(status, GitHubService.RunnerStatus(online: false, busy: false))
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .offline, busy: false)))
     }
 
     func testRunnerStatusNotRegistered() async throws {
@@ -120,7 +120,7 @@ final class GitHubServiceTests: XCTestCase {
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a3f9c")
-        XCTAssertNil(status)
+        XCTAssertEqual(status, .notRegistered)
     }
 
     func testRunnerStatusEscapesPlusInRunnerName() async throws {
@@ -133,7 +133,7 @@ final class GitHubServiceTests: XCTestCase {
         let listRequest = session.requests.last
         XCTAssertEqual(listRequest?.url?.path, "/orgs/org/actions/runners")
         XCTAssertEqual(listRequest?.url?.query, "name=macos15%2Bxcode16", "a literal + is decoded server-side as a space and would never match the runner")
-        XCTAssertEqual(status, GitHubService.RunnerStatus(online: true, busy: false))
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: false)))
     }
 
     func testRunnerStatusEscapesAmpersandInRunnerName() async throws {
@@ -144,7 +144,7 @@ final class GitHubServiceTests: XCTestCase {
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a&b=c")
         XCTAssertEqual(session.requests.last?.url?.query, "name=r-a%26b%3Dc")
-        XCTAssertEqual(status, GitHubService.RunnerStatus(online: true, busy: true))
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: true)))
     }
 
     func testRunnerStatusIgnoresSimilarButDifferentName() async throws {
@@ -154,7 +154,7 @@ final class GitHubServiceTests: XCTestCase {
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c-2\",\"status\":\"online\",\"busy\":false}]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a3f9c")
-        XCTAssertNil(status)
+        XCTAssertEqual(status, .notRegistered)
     }
 
     func testDeleteRunnerIgnoresSimilarButDifferentName() async throws {

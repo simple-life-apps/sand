@@ -60,12 +60,22 @@ struct GitHubService: Sendable {
         return true
     }
 
+    enum RunnerLookup: Equatable, Sendable {
+        case notRegistered
+        case registered(RunnerStatus)
+    }
+
     struct RunnerStatus: Equatable, Sendable {
-        let online: Bool
+        enum Connection: Equatable, Sendable {
+            case online
+            case offline
+        }
+
+        let connection: Connection
         let busy: Bool
     }
 
-    func runnerStatus(named name: String) async throws -> RunnerStatus? {
+    func runnerStatus(named name: String) async throws -> RunnerLookup {
         do {
             return try await fetchRunnerStatus(named: name, token: cachedInstallationToken())
         } catch let GitHubServiceError.httpError(status, _) where status == 401 {
@@ -95,11 +105,14 @@ struct GitHubService: Sendable {
         return response.token
     }
 
-    private func fetchRunnerStatus(named name: String, token: String) async throws -> RunnerStatus? {
+    private func fetchRunnerStatus(named name: String, token: String) async throws -> RunnerLookup {
         guard let runner = try await findRunner(named: name, token: token) else {
-            return nil
+            return .notRegistered
         }
-        return RunnerStatus(online: runner.status == "online", busy: runner.busy ?? false)
+        return .registered(RunnerStatus(
+            connection: runner.status == "online" ? .online : .offline,
+            busy: runner.busy ?? false
+        ))
     }
 
     private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
@@ -186,9 +199,17 @@ struct GitHubService: Sendable {
 }
 
 actor GitHubTokenCache {
+    struct IssuedToken {
+        let value: String
+        let expiresAt: Date
+
+        func isValid(at now: Date) -> Bool {
+            now < expiresAt.addingTimeInterval(-60)
+        }
+    }
+
     private var installationId: Int?
-    private var token: String?
-    private var expiresAt: Date?
+    private var issued: IssuedToken?
 
     func cachedInstallationId() -> Int? {
         installationId
@@ -199,19 +220,17 @@ actor GitHubTokenCache {
     }
 
     func validToken(now: Date) -> String? {
-        guard let token, let expiresAt, now < expiresAt.addingTimeInterval(-60) else {
+        guard let issued, issued.isValid(at: now) else {
             return nil
         }
-        return token
+        return issued.value
     }
 
     func store(token: String, expiresAt: Date) {
-        self.token = token
-        self.expiresAt = expiresAt
+        issued = IssuedToken(value: token, expiresAt: expiresAt)
     }
 
     func invalidateToken() {
-        token = nil
-        expiresAt = nil
+        issued = nil
     }
 }
