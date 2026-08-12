@@ -870,6 +870,20 @@ struct Runner: Sendable {
         }
     }
 
+    static func sshFailureDetail(for error: Error) -> String {
+        guard case let .failed(exitCode, _, stderr, _)? = error as? ProcessRunnerError else {
+            return String(describing: error)
+        }
+        let lastLine = stderr
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last(where: { !$0.isEmpty })
+        guard let lastLine else {
+            return "exit \(exitCode)"
+        }
+        return "exit \(exitCode): \(lastLine)"
+    }
+
     private func retrySSHIfNeeded(error: Error, stage: String, attempt: inout Int) async -> Bool {
         guard shouldRetrySSH(error), attempt < sshRetryDelays.count else {
             return false
@@ -877,10 +891,11 @@ struct Runner: Sendable {
         let delay = sshRetryDelays[attempt]
         attempt += 1
         let attemptLabel = "\(attempt)/\(sshRetryDelays.count)"
+        let detail = Self.sshFailureDetail(for: error)
         if delay > 0 {
-            logger.warning("SSH failed during \(stage), retrying in \(delay)s (attempt \(attemptLabel))")
+            logger.warning("SSH failed during \(stage) (\(detail)), retrying in \(delay)s (attempt \(attemptLabel))")
         } else {
-            logger.warning("SSH failed during \(stage), retrying (attempt \(attemptLabel))")
+            logger.warning("SSH failed during \(stage) (\(detail)), retrying (attempt \(attemptLabel))")
         }
         do {
             try await Task.sleep(nanoseconds: nanos(from: delay))
