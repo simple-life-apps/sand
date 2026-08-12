@@ -35,4 +35,28 @@ actor RunnerControl {
         healthCheckTask = nil
         task?.cancel()
     }
+
+    private var offlineMonitorTask: Task<Void, Never>?
+
+    func setOfflineMonitorTask(_ task: Task<Void, Never>) {
+        offlineMonitorTask = task
+    }
+
+    func takeOfflineMonitorTask() -> Task<Void, Never>? {
+        let task = offlineMonitorTask
+        offlineMonitorTask = nil
+        return task
+    }
+
+    func cancelOfflineMonitor() async {
+        let task = offlineMonitorTask
+        offlineMonitorTask = nil
+        task?.cancel()
+        // Await the task out even on the signal path: cleanup runs
+        // concurrently there, and a poll past its cancellation check must not
+        // race it (spec: cancellation alone is not sufficient).
+        if let task {
+            await task.value
+        }
+    }
 }
