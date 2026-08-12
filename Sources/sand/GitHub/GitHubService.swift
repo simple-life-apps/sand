@@ -51,13 +51,7 @@ struct GitHubService: Sendable {
     func deleteRunner(named name: String) async throws -> Bool {
         let installationId = try await installationID()
         let accessToken = try await installationAccessToken(installationId: installationId)
-        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
-        let list: RunnersListResponse = try await request(
-            path: "\(runnersPath())?name=\(encodedName)",
-            method: "GET",
-            token: accessToken
-        )
-        guard let runner = list.runners.first(where: { $0.name == name }) else {
+        guard let runner = try await findRunner(named: name, token: accessToken) else {
             return false
         }
         try await requestExpectingNoContent(path: "\(runnersPath())/\(runner.id)", method: "DELETE", token: accessToken)
@@ -76,18 +70,21 @@ struct GitHubService: Sendable {
     }
 
     private func fetchRunnerStatus(named name: String, token: String) async throws -> RunnerStatus? {
+        guard let runner = try await findRunner(named: name, token: token) else {
+            return nil
+        }
+        return RunnerStatus(online: runner.status == "online", busy: runner.busy ?? false)
+    }
+
+    private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
         let list: RunnersListResponse = try await request(
             path: "\(runnersPath())?name=\(encodedName)",
             method: "GET",
             token: token
         )
-        guard let runner = list.runners.first(where: { $0.name == name }) else {
-            return nil
-        }
-        return RunnerStatus(online: runner.status == "online", busy: runner.busy ?? false)
+        return list.runners.first(where: { $0.name == name })
     }
-
 
     private func installationID() async throws -> Int {
         let token = try auth.token(now: Date())
