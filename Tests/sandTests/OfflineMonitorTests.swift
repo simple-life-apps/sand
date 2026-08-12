@@ -19,7 +19,7 @@ private actor RecycleRecorder {
 }
 
 private actor PollAlternator {
-    private var calls = 0
+    private(set) var calls = 0
 
     func nextIsError() -> Bool {
         let index = calls % 12
@@ -28,6 +28,7 @@ private actor PollAlternator {
     }
 }
 
+@Suite(.timeLimit(.minutes(1)))
 struct OfflineMonitorTests {
     @Test func signalMapping() {
         #expect(OfflineMonitor.signal(for: .notRegistered) == .offline)
@@ -95,10 +96,17 @@ struct OfflineMonitorTests {
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
         let task = Task { await monitor.run() }
-        try? await Task.sleep(for: .milliseconds(100))
+        var polls = 0
+        var attempts = 0
+        while polls < 24, attempts < 200 {
+            attempts += 1
+            try? await Task.sleep(for: .milliseconds(5))
+            polls = await alternator.calls
+        }
         task.cancel()
         await task.value
         let messages = await recorder.messages
+        #expect(polls >= 24, "the test is vacuous unless at least two full error/busy cycles ran")
         #expect(messages.isEmpty)
     }
 

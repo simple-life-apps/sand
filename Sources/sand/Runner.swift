@@ -257,19 +257,17 @@ struct Runner: Sendable {
                     await shutdownCoordinator.cleanup(reason: String(describing: reason))
                     return
                 }
-                let monitor: OfflineMonitor?
-                switch githubConfig.recycleAfterOffline {
-                case let .after(threshold):
-                    monitor = makeOfflineMonitor(
+                let monitor = githubConfig.recycleAfterOffline.threshold.map { threshold in
+                    makeOfflineMonitor(
                         github: github,
                         runnerName: uniqueRunnerName,
                         threshold: threshold,
                         control: control,
                         state: healthCheckState
                     )
-                case .disabled:
+                }
+                if monitor == nil {
                     logger.info("offline monitor disabled (recycleAfterOffline: 0)")
-                    monitor = nil
                 }
                 let outcome = await runProvisionerCommandsMonitored(
                     [script.run],

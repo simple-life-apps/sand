@@ -1,6 +1,16 @@
 import XCTest
 @testable import sand
 
+final class OfflineRecyclingThresholdTests: XCTestCase {
+    func testDisabledHasNoThresholdSoNoMonitorIsBuilt() {
+        XCTAssertNil(OfflineRecycling.disabled.threshold)
+    }
+
+    func testAfterExposesItsThreshold() {
+        XCTAssertEqual(OfflineRecycling.after(.seconds(600)).threshold, .seconds(600))
+    }
+}
+
 final class RunnerRestartReasonTests: XCTestCase {
     func testHealthCheckFailureMapsToHealthCheckFailed() {
         XCTAssertEqual(Runner.restartReason(for: .healthCheck("exit code 1")), .healthCheckFailed("exit code 1"))

@@ -37,6 +37,22 @@ final class ConfigValidatorTests: XCTestCase {
         XCTAssertTrue(issues.isEmpty)
     }
 
+    func testSampleFullConfigFixtureLoadsAndHasNoErrors() throws {
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("fixtures/sample_full_config.yml")
+        let config = try Config.load(path: fixture.path)
+        let github = config.runners.first(where: { $0.provisioner.type == .github })?.provisioner.github
+        XCTAssertEqual(github?.recycleAfterOffline, .after(.seconds(600)))
+        // The fixture points privateKeyPath at a user-specific path, so key
+        // existence is the one error a checkout cannot satisfy.
+        let errors = ConfigValidator().validate(config)
+            .filter { $0.severity == .error && !$0.message.contains("Private key not found") }
+        XCTAssertTrue(errors.isEmpty, "fixture should otherwise be a valid config: \(errors)")
+    }
+
     func testRecycleAfterOfflineBelowTwoPollIntervalsWarns() throws {
         let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .after(.seconds(30)))
         let issues = ConfigValidator().validate(Config(runners: [runner]))

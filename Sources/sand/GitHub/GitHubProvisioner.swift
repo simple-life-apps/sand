@@ -6,6 +6,15 @@ enum OfflineRecycling: Equatable, Sendable {
 
     static let `default` = OfflineRecycling.after(.seconds(600))
 
+    var threshold: Duration? {
+        switch self {
+        case .disabled:
+            return nil
+        case let .after(threshold):
+            return threshold
+        }
+    }
+
     enum ParseError: Error, CustomStringConvertible {
         case notFinite
         case negative

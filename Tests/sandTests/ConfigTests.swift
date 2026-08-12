@@ -141,22 +141,30 @@ final class ConfigTests: XCTestCase {
 
     func testGitHubProvisionerRecycleAfterOfflineNegativeFailsToDecode() throws {
         let url = try writeGithubConfig(recycleAfterOffline: "-1")
-        XCTAssertThrowsError(try Config.load(path: url.path))
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains(">= 0"), "unexpected error: \(error)")
+        }
     }
 
     func testGitHubProvisionerRecycleAfterOfflineHugeFailsToDecode() throws {
         let url = try writeGithubConfig(recycleAfterOffline: "1e30")
-        XCTAssertThrowsError(try Config.load(path: url.path))
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains("one year"), "unexpected error: \(error)")
+        }
     }
 
     func testGitHubProvisionerRecycleAfterOfflineInfiniteFailsToDecode() throws {
         let url = try writeGithubConfig(recycleAfterOffline: ".inf")
-        XCTAssertThrowsError(try Config.load(path: url.path))
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains("finite"), "unexpected error: \(error)")
+        }
     }
 
     func testGitHubProvisionerRecycleAfterOfflineNaNFailsToDecode() throws {
         let url = try writeGithubConfig(recycleAfterOffline: ".nan")
-        XCTAssertThrowsError(try Config.load(path: url.path))
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains("finite"), "unexpected error: \(error)")
+        }
     }
 
     private func writeGithubConfig(recycleAfterOffline: String) throws -> URL {
