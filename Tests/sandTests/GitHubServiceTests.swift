@@ -79,4 +79,37 @@ final class GitHubServiceTests: XCTestCase {
         XCTAssertTrue(deleted)
         XCTAssertEqual(session.requests.last?.url?.path, "/repos/org/repo/actions/runners/7")
     }
+
+    func testRunnerStatusOnlineBusy() async throws {
+        let session = MockSession()
+        session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
+        session.responses["/app/installations/1/access_tokens"] = (Data("{\"token\":\"access\",\"expires_at\":\"2030-01-01T00:00:00Z\"}".utf8), 200)
+        session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\",\"status\":\"online\",\"busy\":true}]}".utf8), 200)
+        let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
+        let status = try await service.runnerStatus(named: "r-a3f9c")
+        XCTAssertEqual(status, GitHubService.RunnerStatus(online: true, busy: true))
+        let listRequest = session.requests.last
+        XCTAssertEqual(listRequest?.url?.path, "/orgs/org/actions/runners")
+        XCTAssertEqual(listRequest?.url?.query, "name=r-a3f9c")
+    }
+
+    func testRunnerStatusOffline() async throws {
+        let session = MockSession()
+        session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
+        session.responses["/app/installations/1/access_tokens"] = (Data("{\"token\":\"access\",\"expires_at\":\"2030-01-01T00:00:00Z\"}".utf8), 200)
+        session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\",\"status\":\"offline\",\"busy\":false}]}".utf8), 200)
+        let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
+        let status = try await service.runnerStatus(named: "r-a3f9c")
+        XCTAssertEqual(status, GitHubService.RunnerStatus(online: false, busy: false))
+    }
+
+    func testRunnerStatusNotRegistered() async throws {
+        let session = MockSession()
+        session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
+        session.responses["/app/installations/1/access_tokens"] = (Data("{\"token\":\"access\",\"expires_at\":\"2030-01-01T00:00:00Z\"}".utf8), 200)
+        session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[]}".utf8), 200)
+        let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
+        let status = try await service.runnerStatus(named: "r-a3f9c")
+        XCTAssertNil(status)
+    }
 }

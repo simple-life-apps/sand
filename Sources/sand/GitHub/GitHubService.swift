@@ -28,6 +28,8 @@ struct GitHubService: Sendable {
         struct Runner: Decodable {
             let id: Int
             let name: String
+            let status: String?
+            let busy: Bool?
         }
         let runners: [Runner]
     }
@@ -60,6 +62,30 @@ struct GitHubService: Sendable {
         }
         try await requestExpectingNoContent(path: "\(runnersPath())/\(runner.id)", method: "DELETE", token: accessToken)
         return true
+    }
+
+    struct RunnerStatus: Equatable, Sendable {
+        let online: Bool
+        let busy: Bool
+    }
+
+    func runnerStatus(named name: String) async throws -> RunnerStatus? {
+        let installationId = try await installationID()
+        let accessToken = try await installationAccessToken(installationId: installationId)
+        return try await fetchRunnerStatus(named: name, token: accessToken)
+    }
+
+    private func fetchRunnerStatus(named name: String, token: String) async throws -> RunnerStatus? {
+        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
+        let list: RunnersListResponse = try await request(
+            path: "\(runnersPath())?name=\(encodedName)",
+            method: "GET",
+            token: token
+        )
+        guard let runner = list.runners.first(where: { $0.name == name }) else {
+            return nil
+        }
+        return RunnerStatus(online: runner.status == "online", busy: runner.busy ?? false)
     }
 
 
