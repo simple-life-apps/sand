@@ -241,10 +241,8 @@ struct Runner: Sendable {
                 }
                 let cacheManager = RunnerCacheManager(cacheDirectory: runnerCacheHostPath, logger: logger)
                 try await preseedRunner(cacheManager: cacheManager, ssh: ssh)
-                let commands = provisioner.script(config: githubConfig, runnerToken: token, runnerName: uniqueRunnerName)
-                let setupCommands = Array(commands.dropLast())
-                let runCommand = commands.last ?? ""
-                let setupOutcome = await runProvisionerCommands(setupCommands, ssh: ssh, healthCheckState: healthCheckState)
+                let script = provisioner.script(config: githubConfig, runnerToken: token, runnerName: uniqueRunnerName)
+                let setupOutcome = await runProvisionerCommands(script.setup, ssh: ssh, healthCheckState: healthCheckState)
                 switch setupOutcome {
                 case .completed:
                     break
@@ -263,19 +261,20 @@ struct Runner: Sendable {
                     await shutdownCoordinator.cleanup(reason: String(describing: restartReason(for: failure)))
                     return
                 }
-                if githubConfig.recycleAfterOffline > 0 {
+                switch githubConfig.recycleAfterOffline {
+                case let .after(threshold):
                     let monitorTask = startOfflineMonitor(
                         github: github,
                         runnerName: uniqueRunnerName,
-                        threshold: githubConfig.recycleAfterOffline,
+                        threshold: threshold,
                         control: control,
                         state: healthCheckState
                     )
                     await control.setOfflineMonitorTask(monitorTask)
-                } else {
+                case .disabled:
                     logger.info("offline monitor disabled (recycleAfterOffline: 0)")
                 }
-                let outcome = await runProvisionerCommands([runCommand], ssh: ssh, healthCheckState: healthCheckState)
+                let outcome = await runProvisionerCommands([script.run], ssh: ssh, healthCheckState: healthCheckState)
                 switch outcome {
                 case .completed:
                     logger.warning("github provisioner completed; runner exited, restarting VM")
@@ -668,14 +667,14 @@ struct Runner: Sendable {
     private func startOfflineMonitor(
         github: GitHubService,
         runnerName: String,
-        threshold: TimeInterval,
+        threshold: Duration,
         control: RunnerControl,
         state: HealthCheckState
     ) -> Task<Void, Never> {
-        logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(Int(threshold))s, poll=60s)")
+        logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(threshold.components.seconds)s, poll=60s)")
         let monitor = OfflineMonitor(
             runnerName: runnerName,
-            threshold: .seconds(threshold),
+            threshold: threshold,
             pollInterval: Self.offlinePollInterval,
             poll: { try await github.runnerStatus(named: runnerName) },
             onRecycle: { message in

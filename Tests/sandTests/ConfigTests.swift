@@ -126,10 +126,40 @@ final class ConfigTests: XCTestCase {
         """
         let url = try writeTempFile(contents: yaml)
         let config = try Config.load(path: url.path)
-        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, 600)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, .after(.seconds(600)))
     }
 
-    func testGitHubProvisionerRecycleAfterOfflineExplicit() throws {
+    func testGitHubProvisionerRecycleAfterOfflineZeroDisables() throws {
+        let config = try Config.load(path: writeGithubConfig(recycleAfterOffline: "0").path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, .disabled)
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineOneYearAccepted() throws {
+        let config = try Config.load(path: writeGithubConfig(recycleAfterOffline: "31536000").path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, .after(.seconds(31_536_000)))
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineNegativeFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: "-1")
+        XCTAssertThrowsError(try Config.load(path: url.path))
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineHugeFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: "1e30")
+        XCTAssertThrowsError(try Config.load(path: url.path))
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineInfiniteFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: ".inf")
+        XCTAssertThrowsError(try Config.load(path: url.path))
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineNaNFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: ".nan")
+        XCTAssertThrowsError(try Config.load(path: url.path))
+    }
+
+    private func writeGithubConfig(recycleAfterOffline: String) throws -> URL {
         let yaml = """
         runners:
           - name: runner-1
@@ -144,11 +174,9 @@ final class ConfigTests: XCTestCase {
                 organization: acme
                 privateKeyPath: ~/key.pem
                 runnerName: runner-1
-                recycleAfterOffline: 0
+                recycleAfterOffline: \(recycleAfterOffline)
         """
-        let url = try writeTempFile(contents: yaml)
-        let config = try Config.load(path: url.path)
-        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, 0)
+        return try writeTempFile(contents: yaml)
     }
 
     func testScriptProvisioner() throws {

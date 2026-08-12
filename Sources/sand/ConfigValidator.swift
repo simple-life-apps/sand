@@ -11,8 +11,6 @@ struct ConfigValidationIssue: Equatable {
 }
 
 final class ConfigValidator {
-    private static let maxRecycleAfterOffline: TimeInterval = 31_536_000
-
     func validate(_ config: Config) -> [ConfigValidationIssue] {
         var issues: [ConfigValidationIssue] = []
         if config.runners.isEmpty {
@@ -175,13 +173,6 @@ final class ConfigValidator {
                 } else if github.repository != nil {
                     issues.append(.init(severity: .error, message: "provisioner.config.runnerGroup requires organization-level registration (remove repository)."))
                 }
-            }
-            if !github.recycleAfterOffline.isFinite {
-                issues.append(.init(severity: .error, message: "provisioner.config.recycleAfterOffline must be a finite number of seconds."))
-            } else if github.recycleAfterOffline < 0 {
-                issues.append(.init(severity: .error, message: "provisioner.config.recycleAfterOffline must be >= 0 (0 disables offline recycling)."))
-            } else if github.recycleAfterOffline > Self.maxRecycleAfterOffline {
-                issues.append(.init(severity: .error, message: "provisioner.config.recycleAfterOffline must be at most 31536000 seconds (one year)."))
             }
         }
     }
