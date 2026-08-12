@@ -738,7 +738,9 @@ In `Tests/sandTests/ConfigValidatorTests.swift`, add (this file builds `Config` 
         )
         let config = Config(runners: [runner])
         let issues = ConfigValidator().validate(config)
-        XCTAssertTrue(issues.contains { $0.severity == .error && $0.message == "provisioner.config.recycleAfterOffline must be >= 0 (0 disables offline recycling)." })
+        // Runner-scoped messages are prefixed with "runner <name>: " by the
+        // validator (ConfigValidator.swift ~line 57), hence hasSuffix.
+        XCTAssertTrue(issues.contains { $0.severity == .error && $0.message.hasSuffix("provisioner.config.recycleAfterOffline must be >= 0 (0 disables offline recycling).") })
     }
 ```
 
@@ -1034,20 +1036,189 @@ git commit -m "Generalize health check failure channel to MonitorFailure with ru
 ### Task 8: Offline monitor task and wiring
 
 **Files:**
-- Modify: `Sources/sand/Runner.swift` (github provisioner branch of `runOnce`, new `startOfflineMonitor`, extend the local `stopHealthCheck` helper)
+- Create: `Sources/sand/OfflineMonitor.swift`
+- Create: `Tests/sandTests/OfflineMonitorTests.swift`
+- Modify: `Sources/sand/Runner.swift` (github provisioner branch of `runOnce`, new `startOfflineMonitor` wrapper, extend the local `stopHealthCheck` helper)
 - Modify: `Sources/sand/RunnerControl.swift`
 - Modify: `Sources/sand/Sand.swift` (signal handler)
 
 **Interfaces:**
-- Consumes: `OfflineTimer` (Task 3), `GitHubService.runnerStatus(named:)` (Tasks 4-5), `recycleAfterOffline` (Task 6), `MonitorFailure`/`markFailed(.runnerOffline(...))` (Task 7).
+- Consumes: `OfflineTimer` (Task 3), `GitHubService.runnerStatus(named:)` / `GitHubService.RunnerStatus` (Tasks 4-5), `recycleAfterOffline` (Task 6), `MonitorFailure`/`markFailed(.runnerOffline(...))` (Task 7).
 - Produces:
-  - `RunnerControl.setOfflineMonitorTask(_:)`, `takeOfflineMonitorTask() -> Task<Void, Never>?`, `cancelOfflineMonitor()`.
-  - `Runner.startOfflineMonitor(github:runnerName:threshold:control:state:) -> Task<Void, Never>` (private).
-  - Monitor starts after the setup commands (through `config.sh`) succeed and before `run.sh` runs; it is cancelled *and awaited* on every exit path of `runOnce` past that point.
+  - `struct OfflineMonitor` with `init(runnerName: String, threshold: Duration, pollInterval: Duration, poll: @escaping @Sendable () async throws -> GitHubService.RunnerStatus?, onRecycle: @escaping @Sendable (String) async -> Void, logger: Logger)`, `func run() async`, and `static func signal(for status: GitHubService.RunnerStatus?) -> OfflineTimer.Signal`. The loop drives injected `poll`/`onRecycle` closures, so tests replay the incident without real time scales or the GitHub API.
+  - `RunnerControl.setOfflineMonitorTask(_:)`, `takeOfflineMonitorTask() -> Task<Void, Never>?`, `cancelOfflineMonitor() async` (cancels *and awaits* the task out).
+  - `Runner.startOfflineMonitor(github:runnerName:threshold:control:state:) -> Task<Void, Never>` (private thin wrapper constructing an `OfflineMonitor`).
+  - Monitor starts after the setup commands (through `config.sh`) succeed and before `run.sh` runs; it is cancelled *and awaited* on every exit path of `runOnce` past that point, and on signal shutdown.
 
-No new unit test: the monitor loop's decision logic lives entirely in `OfflineTimer` (Task 3) and `runnerStatus` (Tasks 4-5), both unit-tested; the loop itself drives real time and the GitHub API. Verification is build + full suite + the manual acceptance check in Task 9.
+Not unit-tested (accepted residue, verified by code review + Task 9 sweep): the `recycleAfterOffline > 0` guard in `runOnce` and the `onRecycle` closure's body (`markFailed`-then-`terminate` wiring) — both are single-purpose glue in `runOnce`, which has no test harness (it drives `tart`/`ssh` subprocesses); their building blocks are covered by Tasks 3-7 tests plus the `OfflineMonitor` tests below.
 
-- [ ] **Step 1: Extend RunnerControl**
+- [ ] **Step 1: Write the failing OfflineMonitor tests**
+
+Create `Tests/sandTests/OfflineMonitorTests.swift` (Swift Testing):
+
+```swift
+import Testing
+@testable import sand
+
+private actor RecycleRecorder {
+    private(set) var messages: [String] = []
+    func record(_ message: String) {
+        messages.append(message)
+    }
+}
+
+struct OfflineMonitorTests {
+    @Test func signalMapping() {
+        #expect(OfflineMonitor.signal(for: nil) == .offline)
+        #expect(OfflineMonitor.signal(for: .init(online: false, busy: false)) == .offline)
+        #expect(OfflineMonitor.signal(for: .init(online: true, busy: false)) == .healthy)
+        #expect(OfflineMonitor.signal(for: .init(online: true, busy: true)) == .healthy)
+        // Busy wins even if GitHub reports the runner offline mid-job.
+        #expect(OfflineMonitor.signal(for: .init(online: false, busy: true)) == .healthy)
+    }
+
+    // Incident replay: registered, then permanently offline (this is the
+    // spec's acceptance scenario). Must recycle once threshold is exceeded.
+    @Test func permanentlyOfflineRunnerTriggersRecycle() async {
+        let recorder = RecycleRecorder()
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .milliseconds(25),
+            pollInterval: .milliseconds(5),
+            poll: { GitHubService.RunnerStatus(online: false, busy: false) },
+            onRecycle: { await recorder.record($0) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        await monitor.run()
+        let messages = await recorder.messages
+        #expect(messages.count == 1)
+        #expect(messages[0].contains("r-1"))
+    }
+
+    @Test func unregisteredRunnerTriggersRecycle() async {
+        let recorder = RecycleRecorder()
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .milliseconds(25),
+            pollInterval: .milliseconds(5),
+            poll: { nil },
+            onRecycle: { await recorder.record($0) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        await monitor.run()
+        let messages = await recorder.messages
+        #expect(messages.count == 1)
+    }
+
+    @Test func busyRunnerNeverRecyclesAndErrorsFreeze() async {
+        let recorder = RecycleRecorder()
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .milliseconds(10),
+            pollInterval: .milliseconds(2),
+            poll: {
+                struct PollError: Error {}
+                // Alternate busy and error: neither may ever fire.
+                if Bool.random() { throw PollError() }
+                return GitHubService.RunnerStatus(online: true, busy: true)
+            },
+            onRecycle: { await recorder.record($0) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        let task = Task { await monitor.run() }
+        try? await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+        await task.value
+        let messages = await recorder.messages
+        #expect(messages.isEmpty)
+    }
+
+    @Test func cancellationStopsTheLoop() async {
+        let recorder = RecycleRecorder()
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { GitHubService.RunnerStatus(online: false, busy: false) },
+            onRecycle: { await recorder.record($0) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        let task = Task { await monitor.run() }
+        try? await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+        await task.value  // must return promptly; awaiting out is the isolation guarantee
+        let messages = await recorder.messages
+        #expect(messages.isEmpty)
+    }
+}
+```
+
+Note: if `Logger`'s initializer differs (check `Sources/sand/Logger.swift` for the actual signature used elsewhere, e.g. in `Runner.init`), construct it the way existing call sites do — the tests only need a quiet logger.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `swift test --filter OfflineMonitorTests 2>&1 | tee $TMPDIR/t8.log`
+Expected: FAIL to build — `OfflineMonitor` not defined.
+
+- [ ] **Step 3: Implement OfflineMonitor**
+
+Create `Sources/sand/OfflineMonitor.swift`:
+
+```swift
+struct OfflineMonitor: Sendable {
+    let runnerName: String
+    let threshold: Duration
+    let pollInterval: Duration
+    let poll: @Sendable () async throws -> GitHubService.RunnerStatus?
+    let onRecycle: @Sendable (String) async -> Void
+    let logger: Logger
+
+    static func signal(for status: GitHubService.RunnerStatus?) -> OfflineTimer.Signal {
+        guard let status else {
+            return .offline
+        }
+        return (status.busy || status.online) ? .healthy : .offline
+    }
+
+    func run() async {
+        let clock = ContinuousClock()
+        var timer = OfflineTimer(threshold: threshold)
+        while !Task.isCancelled {
+            let signal: OfflineTimer.Signal
+            do {
+                signal = Self.signal(for: try await poll())
+            } catch {
+                signal = .unknown
+                logger.warning("offline monitor: runner \(runnerName) status unknown, timer frozen: \(String(describing: error))")
+            }
+            if Task.isCancelled {
+                break
+            }
+            if timer.observe(signal, at: clock.now) {
+                let message = "runner \(runnerName) offline on GitHub past threshold"
+                logger.warning("\(message); recycling VM")
+                await onRecycle(message)
+                return
+            }
+            do {
+                try await Task.sleep(for: pollInterval)
+            } catch {
+                break
+            }
+        }
+        logger.debug("offline monitor stopped (runner=\(runnerName))")
+    }
+}
+```
+
+(`OfflineTimer.Signal` needs `Equatable` for the mapping test's `#expect` — add the conformance in `Sources/sand/OfflineTimer.swift` if the compiler asks: `enum Signal: Equatable`.)
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `swift test --filter OfflineMonitorTests 2>&1 | tee $TMPDIR/t8.log`
+Expected: PASS (5 tests).
+
+- [ ] **Step 5: Extend RunnerControl**
 
 In `Sources/sand/RunnerControl.swift`, add alongside the health check task storage:
 
@@ -1064,19 +1235,25 @@ In `Sources/sand/RunnerControl.swift`, add alongside the health check task stora
         return task
     }
 
-    func cancelOfflineMonitor() {
+    func cancelOfflineMonitor() async {
         let task = offlineMonitorTask
         offlineMonitorTask = nil
         task?.cancel()
+        // Await the task out even on the signal path: cleanup runs
+        // concurrently there, and a poll past its cancellation check must not
+        // race it (spec: cancellation alone is not sufficient).
+        if let task {
+            await task.value
+        }
     }
 ```
 
-- [ ] **Step 2: Add the monitor to Runner**
+- [ ] **Step 6: Add the monitor wrapper to Runner**
 
 In `Sources/sand/Runner.swift`, add next to `startHealthCheck`:
 
 ```swift
-    private static let offlinePollInterval: TimeInterval = 60
+    private static let offlinePollInterval: Duration = .seconds(60)
 
     private func startOfflineMonitor(
         github: GitHubService,
@@ -1085,47 +1262,27 @@ In `Sources/sand/Runner.swift`, add next to `startHealthCheck`:
         control: RunnerControl,
         state: HealthCheckState
     ) -> Task<Void, Never> {
-        Task {
-            let clock = ContinuousClock()
-            var timer = OfflineTimer(threshold: .seconds(threshold))
-            logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(Int(threshold))s, poll=\(Int(Self.offlinePollInterval))s)")
-            while !Task.isCancelled {
-                let signal: OfflineTimer.Signal
-                do {
-                    if let status = try await github.runnerStatus(named: runnerName) {
-                        signal = (status.busy || status.online) ? .healthy : .offline
-                    } else {
-                        signal = .offline
-                    }
-                } catch {
-                    signal = .unknown
-                    logger.warning("offline monitor: runner \(runnerName) status unknown, timer frozen: \(String(describing: error))")
-                }
-                if Task.isCancelled {
-                    break
-                }
-                if timer.observe(signal, at: clock.now) {
-                    let message = "runner \(runnerName) offline on GitHub for \(Int(threshold))s of confirmed observations"
-                    logger.warning("\(message); recycling VM")
-                    // Record the outcome first so the restart is attributed to the
-                    // offline runner, not to a generic provisioner exit.
-                    await state.markFailed(.runnerOffline(message))
-                    await control.terminateProvisioning()
-                    return
-                }
-                do {
-                    try await Task.sleep(nanoseconds: nanos(from: Self.offlinePollInterval))
-                } catch {
-                    self.logger.debug("offline monitor sleep cancelled")
-                    return
-                }
-            }
-            self.logger.debug("offline monitor cancelled (runner=\(runnerName))")
+        logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(Int(threshold))s, poll=60s)")
+        let monitor = OfflineMonitor(
+            runnerName: runnerName,
+            threshold: .seconds(threshold),
+            pollInterval: Self.offlinePollInterval,
+            poll: { try await github.runnerStatus(named: runnerName) },
+            onRecycle: { message in
+                // Record the outcome first so the restart is attributed to the
+                // offline runner, not to a generic provisioner exit.
+                await state.markFailed(.runnerOffline(message))
+                await control.terminateProvisioning()
+            },
+            logger: logger
+        )
+        return Task {
+            await monitor.run()
         }
     }
 ```
 
-- [ ] **Step 3: Wire start/stop into runOnce**
+- [ ] **Step 7: Wire start/stop into runOnce**
 
 In `runOnce`, extend the local stop helper (currently `func stopHealthCheck(_ task: Task<Void, Never>) async` at ~line 186) to also stop the monitor, and rename it so every existing call site is forced through the compiler:
 
@@ -1194,7 +1351,7 @@ with:
 
 The existing `switch outcome` below stays as refactored in Task 7. (`GitHubProvisioner.script` returns a fixed array whose last element is the `run.sh` invocation; `dropLast` leaves everything through `config.sh` plus a trailing `echo`.)
 
-- [ ] **Step 4: Signal shutdown**
+- [ ] **Step 8: Signal shutdown**
 
 In `Sources/sand/Sand.swift`, inside the `SignalHandler` closure, after `await control.cancelHealthCheck()` add:
 
@@ -1202,15 +1359,15 @@ In `Sources/sand/Sand.swift`, inside the `SignalHandler` closure, after `await c
                     await control.cancelOfflineMonitor()
 ```
 
-- [ ] **Step 5: Build and run the full suite**
+- [ ] **Step 9: Build and run the full suite**
 
 Run: `swift test 2>&1 | tee $TMPDIR/t8.log`
 Expected: full suite PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add Sources/sand/Runner.swift Sources/sand/RunnerControl.swift Sources/sand/Sand.swift
+git add Sources/sand/OfflineMonitor.swift Tests/sandTests/OfflineMonitorTests.swift Sources/sand/OfflineTimer.swift Sources/sand/Runner.swift Sources/sand/RunnerControl.swift Sources/sand/Sand.swift
 git commit -m "Recycle VM when GitHub reports the runner offline past recycleAfterOffline"
 ```
 
@@ -1234,11 +1391,12 @@ Expected: validation succeeds (exit 0). If the `validate` subcommand requires th
 
 Re-read `docs/plans/runner-self-healing-spec.md` "Fix" requirements and confirm each maps to landed code:
 
-- busy never recycles / busy-or-online resets → `OfflineTimer` `.healthy` mapping in `startOfflineMonitor` + `OfflineTimerTests.healthyResetsAccumulation`.
+- busy never recycles / busy-or-online resets → `OfflineMonitor.signal(for:)` + `OfflineMonitorTests.signalMapping` / `busyRunnerNeverRecyclesAndErrorsFreeze` + `OfflineTimerTests.healthyResetsAccumulation`.
 - unknown freezes, accumulated-time semantics → `OfflineTimerTests.unknownIntervalAddsZeroAccumulatedTime` / `unknownDoesNotResetAccumulation`.
+- incident replay (registered, then permanently offline, recycles within threshold + poll interval) → `OfflineMonitorTests.permanentlyOfflineRunnerTriggersRecycle` / `unregisteredRunnerTriggersRecycle`.
 - monitor starts post-`config.sh` → command split in `runOnce`.
-- outcome recorded before termination → `startOfflineMonitor` calls `markFailed` before `terminateProvisioning`.
-- stale monitor cannot act on successor → `stopMonitors` awaits `monitor.value`; signal path cancels via `RunnerControl.cancelOfflineMonitor`.
+- outcome recorded before termination → `startOfflineMonitor`'s `onRecycle` calls `markFailed` before `terminateProvisioning`.
+- stale monitor cannot act on successor → `stopMonitors` awaits `monitor.value`; signal path awaits via `RunnerControl.cancelOfflineMonitor()` (also awaiting).
 - token reuse with expiry/401 → `GitHubServiceTests` cache tests.
 - `recycleAfterOffline` default/0/negative → Config + validator tests.
 - distinguishable restart reason → `RestartReason.runnerOffline` + `RestartBackoffTests`.
