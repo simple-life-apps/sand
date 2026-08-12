@@ -13,8 +13,8 @@ struct SSHClient {
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
         "-o", "ConnectTimeout=10",
-        "-o", "ServerAliveInterval=15",
-        "-o", "ServerAliveCountMax=4"
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=6"
     ]
 
     func exec(command: String) async throws -> ProcessResult? {
