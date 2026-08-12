@@ -209,7 +209,7 @@ struct Runner: Sendable {
                     await shutdownCoordinator.cleanup(reason: "provisioner failed")
                     throw error
                 case let .monitorFailed(failure):
-                    let reason = restartReason(for: failure)
+                    let reason = Self.restartReason(for: failure)
                     await scheduleRestart(reason: reason)
                     await stopHealthCheck(healthCheckTask)
                     await shutdownCoordinator.cleanup(reason: String(describing: reason))
@@ -251,7 +251,7 @@ struct Runner: Sendable {
                     await shutdownCoordinator.cleanup(reason: "provisioner failed")
                     throw error
                 case let .monitorFailed(failure):
-                    let reason = restartReason(for: failure)
+                    let reason = Self.restartReason(for: failure)
                     await scheduleRestart(reason: reason)
                     await stopHealthCheck(healthCheckTask)
                     await shutdownCoordinator.cleanup(reason: String(describing: reason))
@@ -279,10 +279,11 @@ struct Runner: Sendable {
                 )
                 switch outcome {
                 case .completed:
-                    logger.warning("github provisioner completed; runner exited, restarting VM")
-                    await scheduleRestart(reason: .provisionerExited)
+                    let reason = Self.restartReason(forCompletedProvisionerWith: await healthCheckState.failure())
+                    logger.warning("github provisioner completed; runner exited, restarting VM (\(reason))")
+                    await scheduleRestart(reason: reason)
                     await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: "provisioner exited")
+                    await shutdownCoordinator.cleanup(reason: String(describing: reason))
                     return
                 case let .failed(error):
                     if await handleStageFailure(error, stage: "provisioner", healthCheckState: healthCheckState) {
@@ -294,7 +295,7 @@ struct Runner: Sendable {
                     await shutdownCoordinator.cleanup(reason: "provisioner failed")
                     throw error
                 case let .monitorFailed(failure):
-                    let reason = restartReason(for: failure)
+                    let reason = Self.restartReason(for: failure)
                     await scheduleRestart(reason: reason)
                     await stopHealthCheck(healthCheckTask)
                     await shutdownCoordinator.cleanup(reason: String(describing: reason))
@@ -333,7 +334,7 @@ struct Runner: Sendable {
             }
         }
         if let failure = await healthCheckState.failure() {
-            let reason = restartReason(for: failure)
+            let reason = Self.restartReason(for: failure)
             await scheduleRestart(reason: reason)
             await stopHealthCheck(healthCheckTask)
             await shutdownCoordinator.cleanup(reason: String(describing: reason))
@@ -906,7 +907,14 @@ struct Runner: Sendable {
         }
     }
 
-    private func restartReason(for failure: MonitorFailure) -> RestartReason {
+    static func restartReason(forCompletedProvisionerWith failure: MonitorFailure?) -> RestartReason {
+        guard let failure else {
+            return .provisionerExited
+        }
+        return Self.restartReason(for: failure)
+    }
+
+    static func restartReason(for failure: MonitorFailure) -> RestartReason {
         switch failure {
         case let .healthCheck(message):
             return .healthCheckFailed(message)
@@ -1030,7 +1038,7 @@ struct Runner: Sendable {
     private func handleStageFailure(_ error: Error, stage: String, healthCheckState: HealthCheckState?) async -> Bool {
         if let healthCheckState, let failure = await healthCheckState.failure() {
             logger.debug("\(stage) failed while monitor already failed: \(failure.message)")
-            await scheduleRestart(reason: restartReason(for: failure))
+            await scheduleRestart(reason: Self.restartReason(for: failure))
             return true
         }
         logStageFailure(error, stage: stage)
