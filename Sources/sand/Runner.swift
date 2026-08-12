@@ -681,8 +681,6 @@ struct Runner: Sendable {
             pollInterval: Self.offlinePollInterval,
             poll: { try await github.runnerStatus(named: runnerName) },
             onRecycle: { message in
-                // Record the outcome first so the restart is attributed to the
-                // offline runner, not to a generic provisioner exit.
                 await state.markFailed(.runnerOffline(message))
                 await control.terminateProvisioning()
             },

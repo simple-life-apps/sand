@@ -42,8 +42,6 @@ struct OfflineMonitorTests {
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: true))) == .healthy)
     }
 
-    // Incident replay: registered, then permanently offline (this is the
-    // spec's acceptance scenario). Must recycle once threshold is exceeded.
     @Test func permanentlyOfflineRunnerTriggersRecycle() async {
         let recorder = RecycleRecorder()
         let monitor = OfflineMonitor(

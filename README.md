@@ -112,7 +112,9 @@ To enable runner caching, set `vm.cache`. The host downloads the Actions runner 
 
 Sand resolves the latest Actions runner version via the GitHub API and re-checks at most once a day. If the API is unreachable, sand falls back to the newest verified tarball in the cache. Without `vm.cache`, the tarball is downloaded and verified on every boot.
 
-Once the runner is registered, sand polls the GitHub API for its status every 60 seconds (fixed) and recycles the VM when GitHub has reported the runner offline or absent for `recycleAfterOffline` accumulated seconds. This catches a runner that is alive on the host but can no longer reach GitHub, which no host-side health check can see. Set `provisioner.config.recycleAfterOffline` in seconds; it defaults to `600`, and `0` disables offline recycling. A runner GitHub reports `busy` is never recycled, and GitHub API errors freeze the accumulated time instead of resetting it.
+Once the runner is registered, sand polls the GitHub API for its status every 60 seconds (fixed) and recycles the VM when GitHub has reported the runner offline or absent for `recycleAfterOffline` accumulated seconds. This catches a runner that is alive on the host but can no longer reach GitHub, which no host-side health check can see. Set `provisioner.config.recycleAfterOffline` in seconds; it defaults to `600`, and `0` disables offline recycling. A runner GitHub reports `busy` is never recycled. GitHub API errors, and any runner status sand does not recognise, freeze the accumulated time instead of resetting it; if polling stays broken for five consecutive attempts sand logs an error saying offline recycling is inactive.
+
+Because status is sampled at poll boundaries and recycling requires two consecutive offline polls, the effective threshold is never below 120 seconds — sand emits a config warning for any non-zero `recycleAfterOffline` under that. Ephemeral runners are deregistered by GitHub as soon as a job finishes, so a low threshold risks recycling a VM during normal post-job teardown.
 
 Notes:
 - `vm.cache.host` must be a directory (missing paths are created; file paths are rejected).
@@ -144,6 +146,8 @@ runners:
 ```
 
 If `healthCheck` is omitted, sand runs `echo healthcheck` every 30s after a 60s delay.
+
+Every SSH and scp invocation is bounded: connects give up after 10 seconds, and an established connection is torn down after roughly 180 seconds of server silence (`ServerAliveInterval=30` × `ServerAliveCountMax=6`). A connect that is bounded this way counts as one failed attempt against `vm.ssh.connectMaxRetries`, so that value now caps wall-clock waiting far more tightly than it did when connects could hang indefinitely.
 
 Full configurations keys can be found at [fixtures/sample_full_config.yml](fixtures/sample_full_config.yml) or [fixtures/sample_on_prod.yml](fixtures/sample_on_prod.yml)
 
