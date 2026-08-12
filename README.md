@@ -145,8 +145,6 @@ runners:
 
 If `healthCheck` is omitted, sand runs `echo healthcheck` every 30s after a 60s delay.
 
-Every SSH and scp invocation is bounded: connects time out after 10 seconds (each counting against `vm.ssh.connectMaxRetries`) and established connections are torn down after ~180 seconds of server silence.
-
 Full configurations keys can be found at [fixtures/sample_full_config.yml](fixtures/sample_full_config.yml) or [fixtures/sample_on_prod.yml](fixtures/sample_on_prod.yml)
 
 ## Acknowledgements
