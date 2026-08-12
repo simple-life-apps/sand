@@ -174,6 +174,9 @@ final class ConfigValidator {
                     issues.append(.init(severity: .error, message: "provisioner.config.runnerGroup requires organization-level registration (remove repository)."))
                 }
             }
+            if github.recycleAfterOffline < 0 {
+                issues.append(.init(severity: .error, message: "provisioner.config.recycleAfterOffline must be >= 0 (0 disables offline recycling)."))
+            }
         }
     }
 

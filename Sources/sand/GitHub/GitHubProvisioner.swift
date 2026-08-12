@@ -1,4 +1,8 @@
+import Foundation
+
 struct GitHubProvisionerConfig: Decodable, Sendable {
+    static let defaultRecycleAfterOffline: TimeInterval = 600
+
     let appId: Int
     let organization: String
     let repository: String?
@@ -6,6 +10,7 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
     let runnerName: String
     let extraLabels: [String]?
     let runnerGroup: String?
+    let recycleAfterOffline: TimeInterval
 
     init(
         appId: Int,
@@ -14,7 +19,8 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
         privateKeyPath: String,
         runnerName: String,
         extraLabels: [String]?,
-        runnerGroup: String?
+        runnerGroup: String?,
+        recycleAfterOffline: TimeInterval = Self.defaultRecycleAfterOffline
     ) {
         self.appId = appId
         self.organization = organization
@@ -23,6 +29,31 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
         self.runnerName = runnerName
         self.extraLabels = extraLabels
         self.runnerGroup = runnerGroup
+        self.recycleAfterOffline = recycleAfterOffline
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.appId = try container.decode(Int.self, forKey: .appId)
+        self.organization = try container.decode(String.self, forKey: .organization)
+        self.repository = try container.decodeIfPresent(String.self, forKey: .repository)
+        self.privateKeyPath = try container.decode(String.self, forKey: .privateKeyPath)
+        self.runnerName = try container.decode(String.self, forKey: .runnerName)
+        self.extraLabels = try container.decodeIfPresent([String].self, forKey: .extraLabels)
+        self.runnerGroup = try container.decodeIfPresent(String.self, forKey: .runnerGroup)
+        self.recycleAfterOffline = try container.decodeIfPresent(TimeInterval.self, forKey: .recycleAfterOffline)
+            ?? Self.defaultRecycleAfterOffline
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case appId
+        case organization
+        case repository
+        case privateKeyPath
+        case runnerName
+        case extraLabels
+        case runnerGroup
+        case recycleAfterOffline
     }
 }
 

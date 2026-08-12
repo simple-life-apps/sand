@@ -108,6 +108,49 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.runners.first?.provisioner.github?.runnerGroup, "macos runners")
     }
 
+    func testGitHubProvisionerRecycleAfterOfflineDefault() throws {
+        let yaml = """
+        runners:
+          - name: runner-1
+            vm:
+              source:
+                type: oci
+                image: ghcr.io/acme/vm:latest
+            provisioner:
+              type: github
+              config:
+                appId: 42
+                organization: acme
+                privateKeyPath: ~/key.pem
+                runnerName: runner-1
+        """
+        let url = try writeTempFile(contents: yaml)
+        let config = try Config.load(path: url.path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, 600)
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineExplicit() throws {
+        let yaml = """
+        runners:
+          - name: runner-1
+            vm:
+              source:
+                type: oci
+                image: ghcr.io/acme/vm:latest
+            provisioner:
+              type: github
+              config:
+                appId: 42
+                organization: acme
+                privateKeyPath: ~/key.pem
+                runnerName: runner-1
+                recycleAfterOffline: 0
+        """
+        let url = try writeTempFile(contents: yaml)
+        let config = try Config.load(path: url.path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, 0)
+    }
+
     func testScriptProvisioner() throws {
         let yaml = """
         runners:

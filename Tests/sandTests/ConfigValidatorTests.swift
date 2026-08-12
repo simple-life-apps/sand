@@ -37,6 +37,43 @@ final class ConfigValidatorTests: XCTestCase {
         XCTAssertTrue(issues.isEmpty)
     }
 
+    func testNegativeRecycleAfterOfflineIsRejected() throws {
+        let keyURL = try writeTempFile(contents: "key", suffix: ".pem")
+        let vm = Config.VM(
+            source: Config.VMSource(type: .oci, image: "ghcr.io/acme/vm:latest", path: nil),
+            hardware: nil,
+            mounts: [],
+            cache: Config.Cache(hostPath: "/tmp/sand-cache", name: nil),
+            run: .default,
+            diskSizeGb: nil,
+            ssh: .standard
+        )
+        let github = GitHubProvisionerConfig(
+            appId: 1,
+            organization: "acme",
+            repository: nil,
+            privateKeyPath: keyURL.path,
+            runnerName: "runner-1",
+            extraLabels: nil,
+            runnerGroup: nil,
+            recycleAfterOffline: -1
+        )
+        let runner = Config.RunnerConfig(
+            name: "runner-1",
+            vm: vm,
+            provisioner: Config.Provisioner(type: .github, script: nil, github: github),
+            preRun: nil,
+            postRun: nil,
+            stopAfter: 1,
+            healthCheck: Config.HealthCheck(command: "true")
+        )
+        let config = Config(runners: [runner])
+        let issues = ConfigValidator().validate(config)
+        // Runner-scoped messages are prefixed with "runner <name>: " by the
+        // validator (ConfigValidator.swift ~line 57), hence hasSuffix.
+        XCTAssertTrue(issues.contains { $0.severity == .error && $0.message.hasSuffix("provisioner.config.recycleAfterOffline must be >= 0 (0 disables offline recycling).") })
+    }
+
     private func githubRunner(repository: String?, runnerGroup: String?) throws -> Config.RunnerConfig {
         let keyURL = try writeTempFile(contents: "key", suffix: ".pem")
         let vm = Config.VM(
