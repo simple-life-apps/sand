@@ -112,6 +112,8 @@ To enable runner caching, set `vm.cache`. The host downloads the Actions runner 
 
 Sand resolves the latest Actions runner version via the GitHub API and re-checks at most once a day. If the API is unreachable, sand falls back to the newest verified tarball in the cache. Without `vm.cache`, the tarball is downloaded and verified on every boot.
 
+Once the runner is registered, sand polls the GitHub API for its status every 60 seconds (fixed) and recycles the VM when GitHub has reported the runner offline or absent for `recycleAfterOffline` accumulated seconds. This catches a runner that is alive on the host but can no longer reach GitHub, which no host-side health check can see. Set `provisioner.config.recycleAfterOffline` in seconds; it defaults to `600`, and `0` disables offline recycling. A runner GitHub reports `busy` is never recycled, and GitHub API errors freeze the accumulated time instead of resetting it.
+
 Notes:
 - `vm.cache.host` must be a directory (missing paths are created; file paths are rejected).
 - `vm.cache` is ignored unless the provisioner type is `github`.
