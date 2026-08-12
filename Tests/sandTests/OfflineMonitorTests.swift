@@ -8,6 +8,16 @@ private actor RecycleRecorder {
     }
 }
 
+private actor PollAlternator {
+    private var calls = 0
+
+    func nextIsError() -> Bool {
+        let index = calls % 12
+        calls += 1
+        return index < 10
+    }
+}
+
 struct OfflineMonitorTests {
     @Test func signalMapping() {
         #expect(OfflineMonitor.signal(for: nil) == .offline)
@@ -53,14 +63,19 @@ struct OfflineMonitorTests {
 
     @Test func busyRunnerNeverRecyclesAndErrorsFreeze() async {
         let recorder = RecycleRecorder()
+        let alternator = PollAlternator()
         let monitor = OfflineMonitor(
             runnerName: "r-1",
             threshold: .milliseconds(10),
             pollInterval: .milliseconds(2),
             poll: {
                 struct PollError: Error {}
-                // Alternate busy and error: neither may ever fire.
-                if Bool.random() { throw PollError() }
+                // Alternate runs of errors and busy polls: neither may ever
+                // fire. Each error run spans more than the threshold, so an
+                // error counted as offline instead of unknown would recycle.
+                if await alternator.nextIsError() {
+                    throw PollError()
+                }
                 return GitHubService.RunnerStatus(online: true, busy: true)
             },
             onRecycle: { await recorder.record($0) },
