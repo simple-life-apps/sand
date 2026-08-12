@@ -36,6 +36,9 @@ struct OfflineMonitorTests {
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .online, busy: true))) == .healthy)
         // Busy wins even if GitHub reports the runner offline mid-job.
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .offline, busy: true))) == .healthy)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized("idle"), busy: false))) == .unknown)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: false))) == .unknown)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: true))) == .healthy)
     }
 
     // Incident replay: registered, then permanently offline (this is the

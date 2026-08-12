@@ -69,6 +69,7 @@ struct GitHubService: Sendable {
         enum Connection: Equatable, Sendable {
             case online
             case offline
+            case unrecognized(String?)
         }
 
         let connection: Connection
@@ -109,10 +110,16 @@ struct GitHubService: Sendable {
         guard let runner = try await findRunner(named: name, token: token) else {
             return .notRegistered
         }
-        return .registered(RunnerStatus(
-            connection: runner.status == "online" ? .online : .offline,
-            busy: runner.busy ?? false
-        ))
+        let connection: RunnerStatus.Connection
+        switch runner.status {
+        case "online":
+            connection = .online
+        case "offline":
+            connection = .offline
+        default:
+            connection = .unrecognized(runner.status)
+        }
+        return .registered(RunnerStatus(connection: connection, busy: runner.busy ?? false))
     }
 
     private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
