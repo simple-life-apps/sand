@@ -54,7 +54,7 @@ final class GitHubServiceTests: XCTestCase {
         XCTAssertEqual(last?.httpMethod, "DELETE")
         let listRequest = session.requests[2]
         XCTAssertEqual(listRequest.url?.path, "/orgs/org/actions/runners")
-        XCTAssertEqual(listRequest.url?.query, "name=r-a3f9c")
+        XCTAssertEqual(listRequest.url?.query, "name=r-a3f9c&per_page=100")
     }
 
     func testDeleteRunnerNotFoundIssuesNoDelete() async throws {
@@ -90,7 +90,7 @@ final class GitHubServiceTests: XCTestCase {
         XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: true)))
         let listRequest = session.requests.last
         XCTAssertEqual(listRequest?.url?.path, "/orgs/org/actions/runners")
-        XCTAssertEqual(listRequest?.url?.query, "name=r-a3f9c")
+        XCTAssertEqual(listRequest?.url?.query, "name=r-a3f9c&per_page=100")
     }
 
     func testRunnerStatusOnlineIdle() async throws {
@@ -173,6 +173,40 @@ final class GitHubServiceTests: XCTestCase {
         }
     }
 
+    func testDeleteRunnerToleratesUnverifiedAbsence() async throws {
+        let session = MockSession()
+        session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
+        session.responses["/app/installations/1/access_tokens"] = (Data("{\"token\":\"access\",\"expires_at\":\"2030-01-01T00:00:00Z\"}".utf8), 200)
+        session.responses["/orgs/org/actions/runners"] = (Data("{\"total_count\":45,\"runners\":[{\"id\":7,\"name\":\"other\",\"status\":\"online\",\"busy\":false}]}".utf8), 200)
+        let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
+        let deleted = try await service.deleteRunner(named: "r-a3f9c")
+        XCTAssertFalse(deleted, "best-effort deregistration must not fail on an incomplete list")
+        XCTAssertFalse(session.requests.contains { $0.httpMethod == "DELETE" })
+    }
+
+    func testRunnerLookupRequestsAFullPage() async throws {
+        let session = MockSession()
+        session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
+        session.responses["/app/installations/1/access_tokens"] = (Data("{\"token\":\"access\",\"expires_at\":\"2030-01-01T00:00:00Z\"}".utf8), 200)
+        session.responses["/orgs/org/actions/runners"] = (Data("{\"total_count\":0,\"runners\":[]}".utf8), 200)
+        let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
+        _ = try await service.runnerStatus(named: "r-a3f9c")
+        XCTAssertEqual(session.requests.last?.url?.query, "name=r-a3f9c&per_page=100", "a larger page keeps absence verifiable even when the name filter is ignored")
+    }
+
+    func testUnverifiedRunnerAbsenceDescribesItself() {
+        let error = GitHubServiceError.unverifiedRunnerAbsence(returned: 1, totalCount: 45)
+        XCTAssertEqual(
+            String(describing: error),
+            "runner list returned 1 of 45 runners; cannot confirm the runner is absent"
+        )
+        let unknownTotal = GitHubServiceError.unverifiedRunnerAbsence(returned: 0, totalCount: nil)
+        XCTAssertEqual(
+            String(describing: unknownTotal),
+            "runner list returned 0 runners without a total count; cannot confirm the runner is absent"
+        )
+    }
+
     func testRunnerStatusFoundOnIncompleteListStillReturnsStatus() async throws {
         let session = MockSession()
         session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
@@ -229,7 +263,7 @@ final class GitHubServiceTests: XCTestCase {
         let status = try await service.runnerStatus(named: "macos15+xcode16")
         let listRequest = session.requests.last
         XCTAssertEqual(listRequest?.url?.path, "/orgs/org/actions/runners")
-        XCTAssertEqual(listRequest?.url?.query, "name=macos15%2Bxcode16", "a literal + is decoded server-side as a space and would never match the runner")
+        XCTAssertEqual(listRequest?.url?.query, "name=macos15%2Bxcode16&per_page=100", "a literal + is decoded server-side as a space and would never match the runner")
         XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: false)))
     }
 
@@ -240,7 +274,7 @@ final class GitHubServiceTests: XCTestCase {
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a&b=c\",\"status\":\"online\",\"busy\":true}]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a&b=c")
-        XCTAssertEqual(session.requests.last?.url?.query, "name=r-a%26b%3Dc")
+        XCTAssertEqual(session.requests.last?.url?.query, "name=r-a%26b%3Dc&per_page=100")
         XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .online, busy: true)))
     }
 

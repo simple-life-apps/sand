@@ -6,10 +6,24 @@ protocol URLSessionProtocol: Sendable {
 
 extension URLSession: URLSessionProtocol {}
 
-enum GitHubServiceError: Error {
+enum GitHubServiceError: Error, CustomStringConvertible {
     case invalidResponse
     case httpError(status: Int, body: String)
     case unverifiedRunnerAbsence(returned: Int, totalCount: Int?)
+
+    var description: String {
+        switch self {
+        case .invalidResponse:
+            return "response was not HTTP"
+        case let .httpError(status, body):
+            return "HTTP \(status): \(body)"
+        case let .unverifiedRunnerAbsence(returned, totalCount):
+            guard let totalCount else {
+                return "runner list returned \(returned) runners without a total count; cannot confirm the runner is absent"
+            }
+            return "runner list returned \(returned) of \(totalCount) runners; cannot confirm the runner is absent"
+        }
+    }
 }
 
 struct GitHubService: Sendable {
@@ -55,7 +69,7 @@ struct GitHubService: Sendable {
     func deleteRunner(named name: String) async throws -> Bool {
         let installationId = try await installationID()
         let accessToken = try await installationAccessToken(installationId: installationId)
-        guard let runner = try await findRunner(named: name, token: accessToken) else {
+        guard let runner = try await findRunner(named: name, token: accessToken, requireVerifiedAbsence: false) else {
             return false
         }
         try await requestExpectingNoContent(path: "\(runnersPath())/\(runner.id)", method: "DELETE", token: accessToken)
@@ -130,7 +144,7 @@ struct GitHubService: Sendable {
         return .registered(RunnerStatus(connection: connection, busy: runner.busy))
     }
 
-    private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
+    private func findRunner(named name: String, token: String, requireVerifiedAbsence: Bool = true) async throws -> RunnersListResponse.Runner? {
         let list: RunnersListResponse = try await request(
             path: runnerLookupPath(named: name),
             method: "GET",
@@ -139,7 +153,7 @@ struct GitHubService: Sendable {
         if let runner = list.runners.first(where: { $0.name == name }) {
             return runner
         }
-        guard list.totalCount == list.runners.count else {
+        if requireVerifiedAbsence, list.totalCount != list.runners.count {
             throw GitHubServiceError.unverifiedRunnerAbsence(returned: list.runners.count, totalCount: list.totalCount)
         }
         return nil
@@ -151,7 +165,7 @@ struct GitHubService: Sendable {
 
     private func runnerLookupPath(named name: String) -> String {
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: Self.queryValueAllowed) ?? name
-        return "\(runnersPath())?name=\(encodedName)"
+        return "\(runnersPath())?name=\(encodedName)&per_page=100"
     }
 
     private func installationID() async throws -> Int {
