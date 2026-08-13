@@ -174,7 +174,23 @@ final class ConfigValidator {
                     issues.append(.init(severity: .error, message: "provisioner.config.runnerGroup requires organization-level registration (remove repository)."))
                 }
             }
+            if case let .after(threshold) = github.recycleAfterOffline {
+                let poll = OfflineMonitor.defaultPollInterval
+                let effective = poll * max(1, Int((threshold / poll).rounded(.up)))
+                if effective != threshold {
+                    let pollSeconds = poll.components.seconds
+                    issues.append(.init(
+                        severity: .warning,
+                        message: "provisioner.config.recycleAfterOffline of \(Self.formatSeconds(threshold))s takes effect at \(effective.components.seconds)s: runner status is polled every \(pollSeconds)s and offline time accumulates between polls, so recycling fires at the next multiple of \(pollSeconds)s."
+                    ))
+                }
+            }
         }
+    }
+
+    private static func formatSeconds(_ duration: Duration) -> String {
+        let seconds = duration / .seconds(1)
+        return seconds == seconds.rounded() ? String(Int(seconds)) : String(seconds)
     }
 
     private func validateRunnerCache(_ runner: Config.RunnerConfig, issues: inout [ConfigValidationIssue]) {

@@ -15,7 +15,7 @@ final class GitHubProvisionerTests: XCTestCase {
             runnerGroup: nil
         )
         let script = provisioner.script(config: config, runnerToken: "token", runnerName: config.runnerName)
-        let joined = script.joined(separator: "\n")
+        let joined = (script.setup + [script.run]).joined(separator: "\n")
         XCTAssertTrue(joined.contains("--labels sand,fast,arm64"))
         XCTAssertTrue(joined.contains("--url https://github.com/org/repo"))
         XCTAssertFalse(joined.contains("curl"))
@@ -34,10 +34,11 @@ final class GitHubProvisionerTests: XCTestCase {
             runnerGroup: nil
         )
         let script = provisioner.script(config: config, runnerToken: "token", runnerName: config.runnerName)
-        let joined = script.joined(separator: "\n")
+        let joined = (script.setup + [script.run]).joined(separator: "\n")
         XCTAssertTrue(joined.contains("--labels sand"))
         XCTAssertTrue(joined.contains("--url https://github.com/org"))
         XCTAssertFalse(joined.contains("--runnergroup"))
+        XCTAssertEqual(script.run, "~/actions-runner/run.sh")
     }
 
     func testScriptWithRunnerGroup() {
@@ -52,7 +53,7 @@ final class GitHubProvisionerTests: XCTestCase {
             runnerGroup: "macos runners"
         )
         let script = provisioner.script(config: config, runnerToken: "token", runnerName: config.runnerName)
-        XCTAssertTrue(script.joined(separator: "\n").contains("--runnergroup 'macos runners'"))
+        XCTAssertTrue(script.setup.joined(separator: "\n").contains("--runnergroup 'macos runners'"))
     }
 
     func testScriptFailsWhenTarballMissing() {
@@ -67,8 +68,8 @@ final class GitHubProvisionerTests: XCTestCase {
             runnerGroup: nil
         )
         let script = provisioner.script(config: config, runnerToken: "token", runnerName: config.runnerName)
-        XCTAssertTrue(script[0].contains("actions-runner.tar.gz"))
-        XCTAssertTrue(script[0].contains("exit 1"))
+        XCTAssertTrue(script.setup[0].contains("actions-runner.tar.gz"))
+        XCTAssertTrue(script.setup[0].contains("exit 1"))
     }
 
     func testUniqueRunnerNameFormat() {
@@ -93,6 +94,6 @@ final class GitHubProvisionerTests: XCTestCase {
             runnerGroup: nil
         )
         let script = provisioner.script(config: config, runnerToken: "token", runnerName: "runner-1-a3f9c")
-        XCTAssertTrue(script.joined(separator: "\n").contains("--name runner-1-a3f9c"))
+        XCTAssertTrue(script.setup.joined(separator: "\n").contains("--name runner-1-a3f9c"))
     }
 }

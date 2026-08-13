@@ -2,6 +2,8 @@ import Foundation
 
 enum RestartReason: Equatable, CustomStringConvertible {
     case healthCheckFailed(String)
+    case runnerOffline(String)
+    case runnerMissing(String)
     case ipNotReady
     case sshNotReady
     case stageFailed(String)
@@ -11,6 +13,10 @@ enum RestartReason: Equatable, CustomStringConvertible {
         switch self {
         case let .healthCheckFailed(message):
             return "healthcheck failed: \(message)"
+        case let .runnerOffline(message):
+            return "runner offline: \(message)"
+        case let .runnerMissing(message):
+            return "runner missing: \(message)"
         case .ipNotReady:
             return "ip not ready"
         case .sshNotReady:
@@ -20,6 +26,32 @@ enum RestartReason: Equatable, CustomStringConvertible {
         case .provisionerExited:
             return "provisioner exited"
         }
+    }
+
+    var backoffKey: String {
+        switch self {
+        case .healthCheckFailed:
+            return "healthCheckFailed"
+        case .runnerOffline:
+            return "runnerOffline"
+        case .runnerMissing:
+            return "runnerMissing"
+        case .ipNotReady:
+            return "ipNotReady"
+        case .sshNotReady:
+            return "sshNotReady"
+        case let .stageFailed(stage):
+            return "stageFailed:\(stage)"
+        case .provisionerExited:
+            return "provisionerExited"
+        }
+    }
+
+    var escalatesBackoff: Bool {
+        if case .provisionerExited = self {
+            return false
+        }
+        return true
     }
 }
 
@@ -57,12 +89,12 @@ actor RestartBackoff {
 
     @discardableResult
     func schedule(reason: RestartReason) -> TimeInterval {
-        if let lastReason, lastReason == reason {
+        if reason.escalatesBackoff, let lastReason, lastReason.backoffKey == reason.backoffKey {
             attempt += 1
         } else {
             attempt = 1
-            lastReason = reason
         }
+        lastReason = reason
         let rawDelay = policy.baseDelay * pow(policy.multiplier, Double(max(0, attempt - 1)))
         let delay = min(rawDelay, policy.maxDelay)
         pendingDelay = delay

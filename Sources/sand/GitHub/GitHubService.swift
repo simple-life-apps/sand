@@ -6,9 +6,24 @@ protocol URLSessionProtocol: Sendable {
 
 extension URLSession: URLSessionProtocol {}
 
-enum GitHubServiceError: Error {
+enum GitHubServiceError: Error, CustomStringConvertible {
     case invalidResponse
     case httpError(status: Int, body: String)
+    case unverifiedRunnerAbsence(returned: Int, totalCount: Int?)
+
+    var description: String {
+        switch self {
+        case .invalidResponse:
+            return "response was not HTTP"
+        case let .httpError(status, body):
+            return "HTTP \(status): \(body)"
+        case let .unverifiedRunnerAbsence(returned, totalCount):
+            guard let totalCount else {
+                return "runner list returned \(returned) runners without a total count; cannot confirm the runner is absent"
+            }
+            return "runner list returned \(returned) of \(totalCount) runners; cannot confirm the runner is absent"
+        }
+    }
 }
 
 struct GitHubService: Sendable {
@@ -18,6 +33,7 @@ struct GitHubService: Sendable {
 
     struct AccessTokenResponse: Decodable {
         let token: String
+        let expiresAt: Date
     }
 
     struct RunnerTokenResponse: Decodable {
@@ -28,7 +44,10 @@ struct GitHubService: Sendable {
         struct Runner: Decodable {
             let id: Int
             let name: String
+            let status: String?
+            let busy: Bool?
         }
+        let totalCount: Int?
         let runners: [Runner]
     }
 
@@ -38,30 +57,126 @@ struct GitHubService: Sendable {
     let organization: String
     let repository: String?
     let baseURL = URL(string: "https://api.github.com")!
+    let tokenCache = GitHubTokenCache()
 
     func runnerRegistrationToken() async throws -> String {
-        let installationId = try await installationID()
-        let accessToken = try await installationAccessToken(installationId: installationId)
-        let tokenResponse: RunnerTokenResponse = try await request(path: registrationTokenPath(), method: "POST", token: accessToken)
+        let tokenResponse: RunnerTokenResponse = try await withInstallationToken { accessToken in
+            try await request(path: registrationTokenPath(), method: "POST", token: accessToken)
+        }
         return tokenResponse.token
     }
 
     func deleteRunner(named name: String) async throws -> Bool {
-        let installationId = try await installationID()
-        let accessToken = try await installationAccessToken(installationId: installationId)
-        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
-        let list: RunnersListResponse = try await request(
-            path: "\(runnersPath())?name=\(encodedName)",
-            method: "GET",
-            token: accessToken
-        )
-        guard let runner = list.runners.first(where: { $0.name == name }) else {
-            return false
+        try await withInstallationToken { accessToken in
+            let runner: RunnersListResponse.Runner?
+            do {
+                runner = try await findRunner(named: name, token: accessToken)
+            } catch GitHubServiceError.unverifiedRunnerAbsence {
+                return false
+            }
+            guard let runner else {
+                return false
+            }
+            try await requestExpectingNoContent(path: "\(runnersPath())/\(runner.id)", method: "DELETE", token: accessToken)
+            return true
         }
-        try await requestExpectingNoContent(path: "\(runnersPath())/\(runner.id)", method: "DELETE", token: accessToken)
-        return true
     }
 
+    enum RunnerLookup: Equatable, Sendable {
+        case notRegistered
+        case registered(RunnerStatus)
+    }
+
+    struct RunnerStatus: Equatable, Sendable {
+        enum Connection: Equatable, Sendable {
+            case online
+            case offline
+            case unrecognized(String?)
+        }
+
+        let connection: Connection
+        let busy: Bool?
+    }
+
+    func runnerStatus(named name: String) async throws -> RunnerLookup {
+        try await withInstallationToken { try await fetchRunnerStatus(named: name, token: $0) }
+    }
+
+    private func withInstallationToken<T: Sendable>(_ body: (String) async throws -> T) async throws -> T {
+        do {
+            return try await body(cachedInstallationToken())
+        } catch let GitHubServiceError.httpError(status, _) where status == 401 {
+            await tokenCache.invalidateToken()
+            return try await body(cachedInstallationToken())
+        }
+    }
+
+    private func cachedInstallationToken() async throws -> String {
+        if let token = await tokenCache.validToken(now: Date()) {
+            return token
+        }
+        let installationId: Int
+        if let cached = await tokenCache.cachedInstallationId() {
+            installationId = cached
+        } else {
+            installationId = try await installationID()
+            await tokenCache.store(installationId: installationId)
+        }
+        let jwt = try auth.token(now: Date())
+        let response: AccessTokenResponse
+        do {
+            response = try await request(
+                path: "/app/installations/\(installationId)/access_tokens",
+                method: "POST",
+                token: jwt
+            )
+        } catch {
+            await tokenCache.invalidateInstallationId()
+            throw error
+        }
+        await tokenCache.store(token: response.token, expiresAt: response.expiresAt)
+        return response.token
+    }
+
+    private func fetchRunnerStatus(named name: String, token: String) async throws -> RunnerLookup {
+        guard let runner = try await findRunner(named: name, token: token) else {
+            return .notRegistered
+        }
+        let connection: RunnerStatus.Connection
+        switch runner.status {
+        case "online":
+            connection = .online
+        case "offline":
+            connection = .offline
+        default:
+            connection = .unrecognized(runner.status)
+        }
+        return .registered(RunnerStatus(connection: connection, busy: runner.busy))
+    }
+
+    private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
+        let list: RunnersListResponse = try await request(
+            path: runnerLookupPath(named: name),
+            method: "GET",
+            token: token
+        )
+        if let runner = list.runners.first(where: { $0.name == name }) {
+            return runner
+        }
+        if list.totalCount != list.runners.count {
+            throw GitHubServiceError.unverifiedRunnerAbsence(returned: list.runners.count, totalCount: list.totalCount)
+        }
+        return nil
+    }
+
+    private static let queryValueAllowed = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+    )
+
+    private func runnerLookupPath(named name: String) -> String {
+        let encodedName = name.addingPercentEncoding(withAllowedCharacters: Self.queryValueAllowed) ?? name
+        return "\(runnersPath())?name=\(encodedName)&per_page=100"
+    }
 
     private func installationID() async throws -> Int {
         let token = try auth.token(now: Date())
@@ -69,17 +184,16 @@ struct GitHubService: Sendable {
         return response.id
     }
 
-    private func installationAccessToken(installationId: Int) async throws -> String {
-        let token = try auth.token(now: Date())
-        let response: AccessTokenResponse = try await request(path: "/app/installations/\(installationId)/access_tokens", method: "POST", token: token)
-        return response.token
-    }
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
 
     private func request<T: Decodable>(path: String, method: String, token: String) async throws -> T {
         let data = try await performRequest(path: path, method: method, token: token)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(T.self, from: data)
+        return try Self.decoder.decode(T.self, from: data)
     }
 
     private func requestExpectingNoContent(path: String, method: String, token: String) async throws {
@@ -125,4 +239,45 @@ struct GitHubService: Sendable {
         return "/orgs/\(organization)/actions/runners"
     }
 
+}
+
+actor GitHubTokenCache {
+    struct IssuedToken {
+        let value: String
+        let expiresAt: Date
+
+        func isValid(at now: Date) -> Bool {
+            now < expiresAt.addingTimeInterval(-60)
+        }
+    }
+
+    private var installationId: Int?
+    private var issued: IssuedToken?
+
+    func cachedInstallationId() -> Int? {
+        installationId
+    }
+
+    func store(installationId: Int) {
+        self.installationId = installationId
+    }
+
+    func validToken(now: Date) -> String? {
+        guard let issued, issued.isValid(at: now) else {
+            return nil
+        }
+        return issued.value
+    }
+
+    func store(token: String, expiresAt: Date) {
+        issued = IssuedToken(value: token, expiresAt: expiresAt)
+    }
+
+    func invalidateToken() {
+        issued = nil
+    }
+
+    func invalidateInstallationId() {
+        installationId = nil
+    }
 }

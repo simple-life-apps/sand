@@ -1,3 +1,41 @@
+import Foundation
+
+enum OfflineRecycling: Equatable, Sendable {
+    case disabled
+    case after(Duration)
+
+    static let `default` = OfflineRecycling.after(.seconds(600))
+
+    var threshold: Duration? {
+        switch self {
+        case .disabled:
+            return nil
+        case let .after(threshold):
+            return threshold
+        }
+    }
+
+}
+
+extension OfflineRecycling: Decodable {
+    init(from decoder: Decoder) throws {
+        let seconds = try decoder.singleValueContainer().decode(TimeInterval.self)
+        func corrupted(_ message: String) -> DecodingError {
+            DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: message))
+        }
+        guard seconds.isFinite else {
+            throw corrupted("recycleAfterOffline must be a finite number of seconds.")
+        }
+        guard seconds >= 0 else {
+            throw corrupted("recycleAfterOffline must be >= 0 (0 disables offline recycling).")
+        }
+        guard seconds <= 31_536_000 else {
+            throw corrupted("recycleAfterOffline must be at most 31536000 seconds (one year).")
+        }
+        self = seconds == 0 ? .disabled : .after(.seconds(seconds))
+    }
+}
+
 struct GitHubProvisionerConfig: Decodable, Sendable {
     let appId: Int
     let organization: String
@@ -6,6 +44,7 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
     let runnerName: String
     let extraLabels: [String]?
     let runnerGroup: String?
+    let recycleAfterOffline: OfflineRecycling
 
     init(
         appId: Int,
@@ -14,7 +53,8 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
         privateKeyPath: String,
         runnerName: String,
         extraLabels: [String]?,
-        runnerGroup: String?
+        runnerGroup: String?,
+        recycleAfterOffline: OfflineRecycling = .default
     ) {
         self.appId = appId
         self.organization = organization
@@ -23,7 +63,36 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
         self.runnerName = runnerName
         self.extraLabels = extraLabels
         self.runnerGroup = runnerGroup
+        self.recycleAfterOffline = recycleAfterOffline
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.appId = try container.decode(Int.self, forKey: .appId)
+        self.organization = try container.decode(String.self, forKey: .organization)
+        self.repository = try container.decodeIfPresent(String.self, forKey: .repository)
+        self.privateKeyPath = try container.decode(String.self, forKey: .privateKeyPath)
+        self.runnerName = try container.decode(String.self, forKey: .runnerName)
+        self.extraLabels = try container.decodeIfPresent([String].self, forKey: .extraLabels)
+        self.runnerGroup = try container.decodeIfPresent(String.self, forKey: .runnerGroup)
+        self.recycleAfterOffline = try container.decodeIfPresent(OfflineRecycling.self, forKey: .recycleAfterOffline) ?? .default
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case appId
+        case organization
+        case repository
+        case privateKeyPath
+        case runnerName
+        case extraLabels
+        case runnerGroup
+        case recycleAfterOffline
+    }
+}
+
+struct ProvisionerScript {
+    let setup: [String]
+    let run: String
 }
 
 struct GitHubProvisioner: Sendable {
@@ -32,19 +101,21 @@ struct GitHubProvisioner: Sendable {
         return "\(base)-\(suffix)"
     }
 
-    func script(config: GitHubProvisionerConfig, runnerToken: String, runnerName: String) -> [String] {
+    func script(config: GitHubProvisionerConfig, runnerToken: String, runnerName: String) -> ProvisionerScript {
         let labels = labelsString(extraLabels: config.extraLabels)
         let url = runnerURL(organization: config.organization, repository: config.repository)
         let runnerGroupArg = config.runnerGroup.map { " --runnergroup '\($0)'" } ?? ""
-        return [
-            "test -f actions-runner.tar.gz || { echo 'actions-runner.tar.gz missing: host preseed did not run' >&2; exit 1; }",
-            "rm -rf ~/actions-runner && mkdir ~/actions-runner",
-            "tar xzf ./actions-runner.tar.gz -C ~/actions-runner",
-            "echo \"Runner extracted\"",
-            "~/actions-runner/config.sh --url \(url) --name \(runnerName) --token \(runnerToken) --ephemeral --unattended --replace --labels \(labels)\(runnerGroupArg)",
-            "echo \"Runner configured, starting ~/actions-runner/run.sh\"",
-            "~/actions-runner/run.sh"
-        ]
+        return ProvisionerScript(
+            setup: [
+                "test -f actions-runner.tar.gz || { echo 'actions-runner.tar.gz missing: host preseed did not run' >&2; exit 1; }",
+                "rm -rf ~/actions-runner && mkdir ~/actions-runner",
+                "tar xzf ./actions-runner.tar.gz -C ~/actions-runner",
+                "echo \"Runner extracted\"",
+                "~/actions-runner/config.sh --url \(url) --name \(runnerName) --token \(runnerToken) --ephemeral --unattended --replace --labels \(labels)\(runnerGroupArg)",
+                "echo \"Runner configured, starting ~/actions-runner/run.sh\""
+            ],
+            run: "~/actions-runner/run.sh"
+        )
     }
 
     private func labelsString(extraLabels: [String]?) -> String {

@@ -108,6 +108,69 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.runners.first?.provisioner.github?.runnerGroup, "macos runners")
     }
 
+    func testGitHubProvisionerRecycleAfterOfflineDefault() throws {
+        let config = try Config.load(path: writeGithubConfig().path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, .after(.seconds(600)))
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineZeroDisables() throws {
+        let config = try Config.load(path: writeGithubConfig(recycleAfterOffline: "0").path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, .disabled)
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineOneYearAccepted() throws {
+        let config = try Config.load(path: writeGithubConfig(recycleAfterOffline: "31536000").path)
+        XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, .after(.seconds(31_536_000)))
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineNegativeFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: "-1")
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains(">= 0"), "unexpected error: \(error)")
+        }
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineHugeFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: "1e30")
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains("one year"), "unexpected error: \(error)")
+        }
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineInfiniteFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: ".inf")
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains("finite"), "unexpected error: \(error)")
+        }
+    }
+
+    func testGitHubProvisionerRecycleAfterOfflineNaNFailsToDecode() throws {
+        let url = try writeGithubConfig(recycleAfterOffline: ".nan")
+        XCTAssertThrowsError(try Config.load(path: url.path)) { error in
+            XCTAssertTrue(String(describing: error).contains("finite"), "unexpected error: \(error)")
+        }
+    }
+
+    private func writeGithubConfig(recycleAfterOffline: String? = nil) throws -> URL {
+        let recycleLine = recycleAfterOffline.map { "\n        recycleAfterOffline: \($0)" } ?? ""
+        let yaml = """
+        runners:
+          - name: runner-1
+            vm:
+              source:
+                type: oci
+                image: ghcr.io/acme/vm:latest
+            provisioner:
+              type: github
+              config:
+                appId: 42
+                organization: acme
+                privateKeyPath: ~/key.pem
+                runnerName: runner-1\(recycleLine)
+        """
+        return try writeTempFile(contents: yaml)
+    }
+
     func testScriptProvisioner() throws {
         let yaml = """
         runners:
