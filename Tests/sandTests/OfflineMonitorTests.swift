@@ -12,9 +12,40 @@ private actor OfflineThenOnlinePoll {
 }
 
 private actor RecycleRecorder {
-    private(set) var messages: [String] = []
-    func record(_ message: String) {
-        messages.append(message)
+    private(set) var events: [(cause: OfflineMonitor.RecycleCause, message: String)] = []
+    var messages: [String] { events.map(\.message) }
+    var causes: [OfflineMonitor.RecycleCause] { events.map(\.cause) }
+    func record(_ cause: OfflineMonitor.RecycleCause, _ message: String) {
+        events.append((cause, message))
+    }
+}
+
+private actor ScriptedPoll {
+    enum Step {
+        case missing
+        case online
+        case error
+    }
+
+    private let script: [Step]
+    private(set) var calls = 0
+
+    init(_ script: [Step]) {
+        self.script = script
+    }
+
+    func next() throws -> GitHubService.RunnerLookup {
+        struct PollError: Error {}
+        let step = script[calls % script.count]
+        calls += 1
+        switch step {
+        case .missing:
+            return .notRegistered
+        case .online:
+            return .registered(GitHubService.RunnerStatus(connection: .online, busy: false))
+        case .error:
+            throw PollError()
+        }
     }
 }
 
@@ -51,28 +82,109 @@ struct OfflineMonitorTests {
             threshold: .milliseconds(25),
             pollInterval: .milliseconds(5),
             poll: { .registered(GitHubService.RunnerStatus(connection: .offline, busy: false)) },
-            onRecycle: { await recorder.record($0) },
+            onRecycle: { await recorder.record($0, $1) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
         await monitor.run()
-        let messages = await recorder.messages
-        #expect(messages.count == 1)
-        #expect(messages[0].contains("r-1"))
+        let events = await recorder.events
+        #expect(events.count == 1)
+        #expect(events[0].cause == .offlinePastThreshold)
+        #expect(events[0].message.contains("r-1"))
     }
 
-    @Test func unregisteredRunnerTriggersRecycle() async {
+    @Test func unregisteredRunnerTriggersFastRecycleWithMissingCause() async {
         let recorder = RecycleRecorder()
         let monitor = OfflineMonitor(
             runnerName: "r-1",
-            threshold: .milliseconds(25),
-            pollInterval: .milliseconds(5),
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
             poll: { .notRegistered },
-            onRecycle: { await recorder.record($0) },
+            onRecycle: { await recorder.record($0, $1) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
         await monitor.run()
-        let messages = await recorder.messages
-        #expect(messages.count == 1)
+        let events = await recorder.events
+        #expect(events.count == 1)
+        #expect(events[0].cause == .missing)
+        #expect(events[0].message.contains("no longer registered"))
+    }
+
+    @Test func registeredPollResetsTheMissingStreak() async {
+        let recorder = RecycleRecorder()
+        let poll = ScriptedPoll([.missing, .missing, .online])
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { try await poll.next() },
+            onRecycle: { await recorder.record($0, $1) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        let task = Task { await monitor.run() }
+        var calls = 0
+        var attempts = 0
+        while calls < 12, attempts < 200 {
+            attempts += 1
+            try? await Task.sleep(for: .milliseconds(5))
+            calls = await poll.calls
+        }
+        task.cancel()
+        await task.value
+        let events = await recorder.events
+        #expect(calls >= 12, "the test is vacuous unless several miss/miss/online cycles ran")
+        #expect(events.isEmpty)
+    }
+
+    @Test func pollErrorsPreserveTheMissingStreak() async {
+        let recorder = RecycleRecorder()
+        let poll = ScriptedPoll([.missing, .error, .error, .missing, .error, .missing])
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { try await poll.next() },
+            onRecycle: { await recorder.record($0, $1) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        await monitor.run()
+        let events = await recorder.events
+        #expect(events.count == 1)
+        #expect(events[0].cause == .missing)
+    }
+
+    @Test func subFloorThresholdRecyclesAsOfflineBeforeThirdMiss() async {
+        let recorder = RecycleRecorder()
+        let poll = ScriptedPoll([.missing])
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .milliseconds(1),
+            pollInterval: .milliseconds(5),
+            poll: { try await poll.next() },
+            onRecycle: { await recorder.record($0, $1) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        await monitor.run()
+        let events = await recorder.events
+        let calls = await poll.calls
+        #expect(events.count == 1)
+        #expect(events[0].cause == .offlinePastThreshold)
+        #expect(calls == 2, "a threshold below one poll interval must trip the timer on the second poll")
+    }
+
+    @Test func missingCauseWinsWhenTimerAndStreakTripOnTheSamePoll() async {
+        let recorder = RecycleRecorder()
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .milliseconds(60),
+            pollInterval: .milliseconds(30),
+            poll: { .notRegistered },
+            onRecycle: { await recorder.record($0, $1) },
+            logger: Logger(label: "test", minimumLevel: .error, sink: nil)
+        )
+        await monitor.run()
+        let events = await recorder.events
+        #expect(events.count == 1)
+        #expect(events[0].cause == .missing)
     }
 
     @Test func busyRunnerNeverRecyclesAndErrorsFreeze() async {
@@ -92,7 +204,7 @@ struct OfflineMonitorTests {
                 }
                 return .registered(GitHubService.RunnerStatus(connection: .online, busy: true))
             },
-            onRecycle: { await recorder.record($0) },
+            onRecycle: { await recorder.record($0, $1) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
         let task = Task { await monitor.run() }
@@ -121,7 +233,7 @@ struct OfflineMonitorTests {
             threshold: .seconds(3600),
             pollInterval: .milliseconds(2),
             poll: { await poll.next() },
-            onRecycle: { _ in },
+            onRecycle: { _, _ in },
             logger: Logger(label: "test", minimumLevel: .debug, sink: sink)
         )
         let task = Task { await monitor.run() }
@@ -157,7 +269,7 @@ struct OfflineMonitorTests {
             threshold: .seconds(3600),
             pollInterval: .milliseconds(1),
             poll: { throw PollFailure() },
-            onRecycle: { _ in },
+            onRecycle: { _, _ in },
             logger: Logger(label: "test", minimumLevel: .debug, sink: sink)
         )
         let task = Task { await monitor.run() }
@@ -189,7 +301,7 @@ struct OfflineMonitorTests {
                 try await Task.sleep(for: .seconds(3600))
                 return .notRegistered
             },
-            onRecycle: { _ in },
+            onRecycle: { _, _ in },
             logger: Logger(label: "test", minimumLevel: .debug, sink: sink)
         )
         let task = Task { await monitor.run() }
@@ -207,7 +319,7 @@ struct OfflineMonitorTests {
             threshold: .seconds(3600),
             pollInterval: .milliseconds(2),
             poll: { .registered(GitHubService.RunnerStatus(connection: .offline, busy: false)) },
-            onRecycle: { await recorder.record($0) },
+            onRecycle: { await recorder.record($0, $1) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
         let task = Task { await monitor.run() }

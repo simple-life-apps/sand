@@ -680,7 +680,7 @@ struct Runner: Sendable {
             threshold: threshold,
             pollInterval: Self.offlinePollInterval,
             poll: { try await github.runnerStatus(named: runnerName) },
-            onRecycle: { message in
+            onRecycle: { _, message in
                 await state.markFailed(.runnerOffline(message))
                 await control.terminateProvisioning()
             },

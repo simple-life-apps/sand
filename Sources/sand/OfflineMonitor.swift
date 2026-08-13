@@ -1,11 +1,17 @@
 struct OfflineMonitor: Sendable {
     static let defaultPollInterval: Duration = .seconds(60)
+    static let missingPollThreshold = 3
+
+    enum RecycleCause: Equatable, Sendable {
+        case offlinePastThreshold
+        case missing
+    }
 
     let runnerName: String
     let threshold: Duration
     let pollInterval: Duration
     let poll: @Sendable () async throws -> GitHubService.RunnerLookup
-    let onRecycle: @Sendable (String) async -> Void
+    let onRecycle: @Sendable (RecycleCause, String) async -> Void
     let logger: Logger
 
     static func signal(for lookup: GitHubService.RunnerLookup) -> OfflineTimer.Signal {
@@ -36,10 +42,13 @@ struct OfflineMonitor: Sendable {
         var offlineRun = false
         var consecutivePollFailures = 0
         var alarmed = false
+        var missingStreak = 0
         while !Task.isCancelled {
             let signal: OfflineTimer.Signal
             do {
-                signal = Self.signal(for: try await poll())
+                let lookup = try await poll()
+                signal = Self.signal(for: lookup)
+                missingStreak = lookup == .notRegistered ? missingStreak + 1 : 0
                 consecutivePollFailures = 0
                 alarmed = false
             } catch {
@@ -70,10 +79,16 @@ struct OfflineMonitor: Sendable {
                 break
             }
             logger.debug("offline monitor poll (runner=\(runnerName), signal=\(signal), offlineFor=\(Self.seconds(timer.accumulatedOffline))s/\(Self.seconds(threshold))s)")
+            if missingStreak >= Self.missingPollThreshold {
+                let message = "runner \(runnerName) no longer registered on GitHub"
+                logger.warning("\(message); recycling VM")
+                await onRecycle(.missing, message)
+                return
+            }
             if verdict == .thresholdReached {
                 let message = "runner \(runnerName) offline on GitHub past threshold"
                 logger.warning("\(message); recycling VM")
-                await onRecycle(message)
+                await onRecycle(.offlinePastThreshold, message)
                 return
             }
             do {
