@@ -9,6 +9,7 @@ extension URLSession: URLSessionProtocol {}
 enum GitHubServiceError: Error {
     case invalidResponse
     case httpError(status: Int, body: String)
+    case unverifiedRunnerAbsence(returned: Int, totalCount: Int?)
 }
 
 struct GitHubService: Sendable {
@@ -32,6 +33,7 @@ struct GitHubService: Sendable {
             let status: String?
             let busy: Bool?
         }
+        let totalCount: Int?
         let runners: [Runner]
     }
 
@@ -134,7 +136,13 @@ struct GitHubService: Sendable {
             method: "GET",
             token: token
         )
-        return list.runners.first(where: { $0.name == name })
+        if let runner = list.runners.first(where: { $0.name == name }) {
+            return runner
+        }
+        guard list.totalCount == list.runners.count else {
+            throw GitHubServiceError.unverifiedRunnerAbsence(returned: list.runners.count, totalCount: list.totalCount)
+        }
+        return nil
     }
 
     private static let queryValueAllowed = CharacterSet(
