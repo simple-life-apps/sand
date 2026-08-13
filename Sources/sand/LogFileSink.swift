@@ -4,9 +4,10 @@ enum LogFileError: Error {
     case openFailed(String)
 }
 
-actor LogFileSink {
+final class LogFileSink: @unchecked Sendable {
     private let handle: FileHandle
     private let dateFormatter: ISO8601DateFormatter
+    private let lock = NSLock()
 
     init(path: String) throws {
         let expandedPath = Config.expandPath(path)
@@ -37,15 +38,8 @@ actor LogFileSink {
         guard let data = line.data(using: .utf8) else {
             return
         }
+        lock.lock()
+        defer { lock.unlock() }
         handle.write(data)
-    }
-
-    nonisolated func writeSync(level: LogLevel, label: String, message: String) {
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            await self.write(level: level, label: label, message: message)
-            semaphore.signal()
-        }
-        semaphore.wait()
     }
 }
