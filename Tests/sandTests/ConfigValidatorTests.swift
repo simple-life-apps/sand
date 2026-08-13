@@ -51,11 +51,37 @@ final class ConfigValidatorTests: XCTestCase {
         XCTAssertTrue(errors.isEmpty, "fixture should otherwise be a valid config: \(errors)")
     }
 
-    func testRecycleAfterOfflineBelowTwoPollIntervalsWarns() throws {
+    func testRecycleAfterOfflineBelowOnePollIntervalWarnsWithEffectiveValue() throws {
         let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .after(.seconds(30)))
         let issues = ConfigValidator().validate(Config(runners: [runner]))
-        let warnings = issues.filter { $0.severity == .warning && $0.message.contains("recycleAfterOffline") }
-        XCTAssertEqual(warnings.count, 1, "unexpected issues: \(issues)")
+        XCTAssertTrue(issues.contains(ConfigValidationIssue(
+            severity: .warning,
+            message: "runner runner-1: provisioner.config.recycleAfterOffline of 30s takes effect at 60s: runner status is polled every 60s and offline time accumulates between polls, so recycling fires at the next multiple of 60s."
+        )), "unexpected issues: \(issues)")
+    }
+
+    func testRecycleAfterOfflineBetweenPollIntervalsWarnsWithRoundedUpValue() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .after(.seconds(90)))
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.contains(ConfigValidationIssue(
+            severity: .warning,
+            message: "runner runner-1: provisioner.config.recycleAfterOffline of 90s takes effect at 120s: runner status is polled every 60s and offline time accumulates between polls, so recycling fires at the next multiple of 60s."
+        )), "unexpected issues: \(issues)")
+    }
+
+    func testFractionalRecycleAfterOfflineWarnsWithoutTruncatingToZero() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .after(.seconds(0.5)))
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.contains(ConfigValidationIssue(
+            severity: .warning,
+            message: "runner runner-1: provisioner.config.recycleAfterOffline of 0.5s takes effect at 60s: runner status is polled every 60s and offline time accumulates between polls, so recycling fires at the next multiple of 60s."
+        )), "unexpected issues: \(issues)")
+    }
+
+    func testRecycleAfterOfflineAtOnePollIntervalIsHonoredWithoutWarning() throws {
+        let runner = try githubRunner(repository: nil, runnerGroup: nil, recycleAfterOffline: .after(.seconds(60)))
+        let issues = ConfigValidator().validate(Config(runners: [runner]))
+        XCTAssertTrue(issues.isEmpty, "unexpected issues: \(issues)")
     }
 
     func testRecycleAfterOfflineAtTwoPollIntervalsIsAccepted() throws {
