@@ -23,7 +23,7 @@ struct OfflineMonitor: Sendable {
             case .online:
                 return .healthy
             case .offline:
-                return status.busy ? .unknown : .offline
+                return status.busy == false ? .offline : .unknown
             case .unrecognized:
                 return .unknown
             }

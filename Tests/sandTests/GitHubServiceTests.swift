@@ -123,14 +123,14 @@ final class GitHubServiceTests: XCTestCase {
         XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .offline, busy: true)))
     }
 
-    func testRunnerStatusOfflineWithAbsentBusyDecodesAsNotBusy() async throws {
+    func testRunnerStatusOfflineWithAbsentBusyDecodesAsUnknownBusy() async throws {
         let session = MockSession()
         session.responses["/orgs/org/installation"] = (Data("{\"id\":1}".utf8), 200)
         session.responses["/app/installations/1/access_tokens"] = (Data("{\"token\":\"access\",\"expires_at\":\"2030-01-01T00:00:00Z\"}".utf8), 200)
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\",\"status\":\"offline\"}]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a3f9c")
-        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .offline, busy: false)))
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .offline, busy: nil)), "an absent busy field is not evidence the runner is idle")
     }
 
     func testRunnerStatusNotRegistered() async throws {
@@ -207,7 +207,7 @@ final class GitHubServiceTests: XCTestCase {
         session.responses["/orgs/org/actions/runners"] = (Data("{\"runners\":[{\"id\":42,\"name\":\"r-a3f9c\"}]}".utf8), 200)
         let service = GitHubService(auth: MockAuth(), session: session, organization: "org", repository: nil)
         let status = try await service.runnerStatus(named: "r-a3f9c")
-        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .unrecognized(nil), busy: false)))
+        XCTAssertEqual(status, .registered(GitHubService.RunnerStatus(connection: .unrecognized(nil), busy: nil)))
     }
 
     func testRunnerStatusUnrecognizedForUnknownStatusValue() async throws {

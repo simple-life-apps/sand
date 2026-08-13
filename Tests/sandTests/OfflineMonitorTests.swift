@@ -78,6 +78,8 @@ struct OfflineMonitorTests {
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized("idle"), busy: false))) == .unknown)
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: false))) == .unknown)
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: true))) == .unknown)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .offline, busy: nil))) == .unknown, "offline with unknown busy must freeze, not accumulate toward recycling")
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .online, busy: nil))) == .healthy)
     }
 
     @Test func permanentlyOfflineRunnerTriggersRecycle() async {

@@ -75,7 +75,7 @@ struct GitHubService: Sendable {
         }
 
         let connection: Connection
-        let busy: Bool
+        let busy: Bool?
     }
 
     func runnerStatus(named name: String) async throws -> RunnerLookup {
@@ -127,7 +127,7 @@ struct GitHubService: Sendable {
         default:
             connection = .unrecognized(runner.status)
         }
-        return .registered(RunnerStatus(connection: connection, busy: runner.busy ?? false))
+        return .registered(RunnerStatus(connection: connection, busy: runner.busy))
     }
 
     private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
