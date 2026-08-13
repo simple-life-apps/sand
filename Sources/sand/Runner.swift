@@ -173,7 +173,7 @@ struct Runner: Sendable {
                 throw error
             }
         }
-        let healthCheckState = HealthCheckState()
+        let healthCheckState = MonitorFailureState()
         logger.debug("healthCheck task preparing (vm=\(name))")
         let healthCheckTask = startHealthCheck(
             healthCheck: config.healthCheck ?? .standard,
@@ -575,7 +575,7 @@ struct Runner: Sendable {
         vmName: String,
         ssh: Config.SSH,
         control: RunnerControl,
-        state: HealthCheckState
+        state: MonitorFailureState
     ) -> Task<Void, Never> {
         logger.info("healthCheck starting in \(healthCheck.delay)s")
         return Task {
@@ -672,7 +672,7 @@ struct Runner: Sendable {
         runnerName: String,
         threshold: Duration,
         control: RunnerControl,
-        state: HealthCheckState
+        state: MonitorFailureState
     ) -> OfflineMonitor {
         logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(threshold.components.seconds)s, poll=60s)")
         return OfflineMonitor(
@@ -680,17 +680,45 @@ struct Runner: Sendable {
             threshold: threshold,
             pollInterval: Self.offlinePollInterval,
             poll: { try await github.runnerStatus(named: runnerName) },
-            onRecycle: { cause, message in
-                switch cause {
-                case .offlinePastThreshold:
-                    await state.markFailed(.runnerOffline(message))
-                case .missing:
-                    await state.markFailed(.runnerMissing(message))
-                }
-                await control.terminateProvisioning()
-            },
+            onRecycle: Self.monitorRecycleHandler(
+                markFailed: { await state.markFailed($0) },
+                terminate: { await control.terminateProvisioning() }
+            ),
             logger: logger
         )
+    }
+
+    static func monitorRecycleHandler(
+        markFailed: @escaping @Sendable (MonitorFailure) async -> Void,
+        terminate: @escaping @Sendable () async -> Void
+    ) -> @Sendable (OfflineMonitor.RecycleCause, String) async -> Void {
+        { cause, message in
+            switch cause {
+            case .offlinePastThreshold:
+                await markFailed(.runnerOffline(message))
+            case .missing:
+                await markFailed(.runnerMissing(message))
+            }
+            await terminate()
+        }
+    }
+
+    static func withOfflineMonitor<T: Sendable>(
+        _ monitor: OfflineMonitor?,
+        body: () async -> T
+    ) async -> T {
+        guard let monitor else {
+            return await body()
+        }
+        return await withTaskGroup(of: Void.self, returning: T.self) { group in
+            group.addTask {
+                await monitor.run()
+            }
+            let result = await body()
+            group.cancelAll()
+            await group.waitForAll()
+            return result
+        }
     }
 
     private enum ProvisionerOutcome<Success: Sendable> {
@@ -703,26 +731,17 @@ struct Runner: Sendable {
         _ commands: [String],
         monitor: OfflineMonitor?,
         ssh: SSHClient,
-        healthCheckState: HealthCheckState
+        healthCheckState: MonitorFailureState
     ) async -> ProvisionerOutcome<Void> {
-        guard let monitor else {
-            return await runProvisionerCommands(commands, ssh: ssh, healthCheckState: healthCheckState)
-        }
-        return await withTaskGroup(of: Void.self, returning: ProvisionerOutcome<Void>.self) { group in
-            group.addTask {
-                await monitor.run()
-            }
-            let outcome = await runProvisionerCommands(commands, ssh: ssh, healthCheckState: healthCheckState)
-            group.cancelAll()
-            await group.waitForAll()
-            return outcome
+        await Self.withOfflineMonitor(monitor) {
+            await runProvisionerCommands(commands, ssh: ssh, healthCheckState: healthCheckState)
         }
     }
 
     private func runProvisionerCommands(
         _ commands: [String],
         ssh: SSHClient,
-        healthCheckState: HealthCheckState
+        healthCheckState: MonitorFailureState
     ) async -> ProvisionerOutcome<Void> {
         for command in commands {
             let outcome = await runProvisionerCommand(command, ssh: ssh, healthCheckState: healthCheckState)
@@ -741,7 +760,7 @@ struct Runner: Sendable {
     private func runProvisionerCommand(
         _ command: String,
         ssh: SSHClient,
-        healthCheckState: HealthCheckState
+        healthCheckState: MonitorFailureState
     ) async -> ProvisionerOutcome<ProcessResult> {
         logScript(command)
         var attempt = 0
@@ -794,7 +813,7 @@ struct Runner: Sendable {
 
     private func awaitProvisionerCommand(
         handle: ProcessHandle,
-        healthCheckState: HealthCheckState
+        healthCheckState: MonitorFailureState
     ) async -> ProvisionerOutcome<ProcessResult> {
         await withTaskGroup(of: ProvisionerOutcome<ProcessResult>?.self) { group in
             group.addTask {
@@ -1053,7 +1072,7 @@ struct Runner: Sendable {
         vmLogger.log(.info, "[executing]\n\(script)")
     }
 
-    private func handleStageFailure(_ error: Error, stage: String, healthCheckState: HealthCheckState?) async -> Bool {
+    private func handleStageFailure(_ error: Error, stage: String, healthCheckState: MonitorFailureState?) async -> Bool {
         if let healthCheckState, let failure = await healthCheckState.failure() {
             logger.debug("\(stage) failed while monitor already failed: \(failure.message)")
             await scheduleRestart(reason: Self.restartReason(for: failure))
@@ -1136,7 +1155,7 @@ enum MonitorFailure: Sendable, Equatable {
     }
 }
 
-private actor HealthCheckState {
+actor MonitorFailureState {
     private var failureStorage: MonitorFailure?
     private var waiters: [UUID: CheckedContinuation<MonitorFailure, Error>] = [:]
 
