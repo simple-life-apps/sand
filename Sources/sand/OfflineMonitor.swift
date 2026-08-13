@@ -67,6 +67,9 @@ struct OfflineMonitor: Sendable {
         var alarmed = false
         var missingStreak = 0
         var freezePolls = 0
+        var freezeStart: ContinuousClock.Instant?
+        var lastFreezeReason: String?
+        var freezeAlarmed = false
         while !Task.isCancelled {
             let signal: OfflineTimer.Signal
             do {
@@ -74,16 +77,23 @@ struct OfflineMonitor: Sendable {
                 signal = Self.signal(for: lookup)
                 missingStreak = lookup == .notRegistered ? missingStreak + 1 : 0
                 if let freezeReason = Self.freezeReason(for: lookup) {
+                    let start = freezeStart ?? clock.now
+                    freezeStart = start
                     freezePolls += 1
-                    if freezePolls == 1 {
+                    if freezeReason != lastFreezeReason {
+                        lastFreezeReason = freezeReason
                         logger.warning("runner \(runnerName) reported \(freezeReason) on GitHub; offline timer frozen until it recovers")
-                    } else if freezePolls == Self.freezeAlarmPollThreshold {
-                        logger.error("runner \(runnerName) offline timer frozen for \(Self.seconds(pollInterval * freezePolls))s (\(freezeReason)); the runner may be wedged and will not be recycled while frozen")
+                    } else if freezePolls >= Self.freezeAlarmPollThreshold, !freezeAlarmed {
+                        freezeAlarmed = true
+                        logger.error("runner \(runnerName) offline timer frozen for \(Self.seconds(start.duration(to: clock.now)))s (\(freezeReason)); the runner may be wedged and will not be recycled while frozen")
                     } else if freezePolls % Self.freezeRewarnPollInterval == 0 {
-                        logger.warning("runner \(runnerName) offline timer still frozen after \(Self.seconds(pollInterval * freezePolls))s (\(freezeReason))")
+                        logger.warning("runner \(runnerName) offline timer still frozen after \(Self.seconds(start.duration(to: clock.now)))s (\(freezeReason))")
                     }
                 } else {
                     freezePolls = 0
+                    freezeStart = nil
+                    lastFreezeReason = nil
+                    freezeAlarmed = false
                 }
                 consecutivePollFailures = 0
                 alarmed = false

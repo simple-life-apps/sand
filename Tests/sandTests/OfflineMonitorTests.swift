@@ -85,6 +85,35 @@ struct OfflineMonitorTests {
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .online, busy: nil))) == .healthy)
     }
 
+    @Test func freezeReasonMapping() {
+        #expect(OfflineMonitor.freezeReason(for: .notRegistered) == nil)
+        #expect(OfflineMonitor.freezeReason(for: .registered(.init(connection: .online, busy: true))) == nil)
+        #expect(OfflineMonitor.freezeReason(for: .registered(.init(connection: .offline, busy: false))) == nil)
+        #expect(OfflineMonitor.freezeReason(for: .registered(.init(connection: .offline, busy: true))) == "busy but offline")
+        #expect(OfflineMonitor.freezeReason(for: .registered(.init(connection: .offline, busy: nil))) == "offline with unknown busy state")
+        #expect(OfflineMonitor.freezeReason(for: .registered(.init(connection: .unrecognized("idle"), busy: false))) == "unrecognized status (idle)")
+        #expect(OfflineMonitor.freezeReason(for: .registered(.init(connection: .unrecognized(nil), busy: nil))) == "unrecognized status (absent)")
+    }
+
+    @Test func everyFrozenSignalHasAFreezeReason() {
+        let lookups: [GitHubService.RunnerLookup] = [
+            .notRegistered,
+            .registered(.init(connection: .online, busy: true)),
+            .registered(.init(connection: .online, busy: nil)),
+            .registered(.init(connection: .offline, busy: false)),
+            .registered(.init(connection: .offline, busy: true)),
+            .registered(.init(connection: .offline, busy: nil)),
+            .registered(.init(connection: .unrecognized("idle"), busy: false)),
+            .registered(.init(connection: .unrecognized(nil), busy: true))
+        ]
+        for lookup in lookups {
+            #expect(
+                (OfflineMonitor.freezeReason(for: lookup) != nil) == (OfflineMonitor.signal(for: lookup) == .unknown),
+                "a frozen timer without a logged reason (or vice versa) for \(lookup)"
+            )
+        }
+    }
+
     @Test func permanentlyOfflineRunnerTriggersRecycle() async {
         let recorder = RecycleRecorder()
         let monitor = OfflineMonitor(
@@ -261,6 +290,7 @@ struct OfflineMonitorTests {
         }
         task.cancel()
         await task.value
+        calls = await poll.calls
         let lines = ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n")
         let rewarns = lines.filter { $0.contains("offline timer still frozen") }
         let alarms = lines.filter { $0.contains("may be wedged") }
@@ -302,6 +332,39 @@ struct OfflineMonitorTests {
         let warnings = contents.split(separator: "\n").filter { $0.contains("unrecognized status (weird)") }
         #expect(calls >= 8, "the test is vacuous unless both unrecognized entries were polled")
         #expect(warnings.count == 2, "an unrecognized status must be visible at the default log level, once per entry")
+    }
+
+    @Test func freezeReasonChangeIsAnnounced() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let path = tempDir.appendingPathComponent("sand.log").path
+        let sink = try LogFileSink(path: path)
+        let poll = ScriptedPoll([.offlineBusy, .offlineBusy, .unrecognized, .unrecognized, .online], repeats: false)
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { try await poll.next() },
+            onRecycle: { _, _ in },
+            logger: Logger(label: "test", minimumLevel: .info, sink: sink)
+        )
+        let task = Task { await monitor.run() }
+        var calls = 0
+        var attempts = 0
+        while calls < 8, attempts < 200 {
+            attempts += 1
+            try? await Task.sleep(for: .milliseconds(5))
+            calls = await poll.calls
+        }
+        task.cancel()
+        await task.value
+        let lines = ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n")
+        let entries = lines.filter { $0.contains("offline timer frozen until it recovers") }
+        #expect(calls >= 8, "the test is vacuous unless both freeze reasons were polled")
+        #expect(entries.count == 2, "a freeze whose cause changes must announce the new cause")
+        #expect(entries.contains { $0.contains("busy but offline") })
+        #expect(entries.contains { $0.contains("unrecognized status (weird)") })
     }
 
     @Test func busyRunnerNeverRecyclesAndErrorsFreeze() async {
