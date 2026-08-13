@@ -30,11 +30,34 @@ struct OfflineMonitor: Sendable {
         }
     }
 
+    static func freezeReason(for lookup: GitHubService.RunnerLookup) -> String? {
+        guard case let .registered(status) = lookup else {
+            return nil
+        }
+        switch status.connection {
+        case .online:
+            return nil
+        case .offline:
+            switch status.busy {
+            case .some(false):
+                return nil
+            case .some(true):
+                return "busy but offline"
+            case .none:
+                return "offline with unknown busy state"
+            }
+        case let .unrecognized(raw):
+            return "unrecognized status (\(raw ?? "absent"))"
+        }
+    }
+
     private static func seconds(_ duration: Duration) -> Int64 {
         duration.components.seconds
     }
 
     private static let pollFailureAlarmThreshold = 5
+    private static let freezeRewarnPollInterval = 10
+    private static let freezeAlarmPollThreshold = 30
 
     func run() async {
         let clock = ContinuousClock()
@@ -43,18 +66,25 @@ struct OfflineMonitor: Sendable {
         var consecutivePollFailures = 0
         var alarmed = false
         var missingStreak = 0
-        var busyOfflineRun = false
+        var freezePolls = 0
         while !Task.isCancelled {
             let signal: OfflineTimer.Signal
             do {
                 let lookup = try await poll()
                 signal = Self.signal(for: lookup)
                 missingStreak = lookup == .notRegistered ? missingStreak + 1 : 0
-                let isBusyOffline = lookup == .registered(.init(connection: .offline, busy: true))
-                if isBusyOffline, !busyOfflineRun {
-                    logger.warning("runner \(runnerName) reported busy but offline on GitHub; offline timer frozen until the job is reaped or the runner reconnects")
+                if let freezeReason = Self.freezeReason(for: lookup) {
+                    freezePolls += 1
+                    if freezePolls == 1 {
+                        logger.warning("runner \(runnerName) reported \(freezeReason) on GitHub; offline timer frozen until it recovers")
+                    } else if freezePolls == Self.freezeAlarmPollThreshold {
+                        logger.error("runner \(runnerName) offline timer frozen for \(Self.seconds(pollInterval * freezePolls))s (\(freezeReason)); the runner may be wedged and will not be recycled while frozen")
+                    } else if freezePolls % Self.freezeRewarnPollInterval == 0 {
+                        logger.warning("runner \(runnerName) offline timer still frozen after \(Self.seconds(pollInterval * freezePolls))s (\(freezeReason))")
+                    }
+                } else {
+                    freezePolls = 0
                 }
-                busyOfflineRun = isBusyOffline
                 consecutivePollFailures = 0
                 alarmed = false
             } catch {

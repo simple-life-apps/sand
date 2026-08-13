@@ -25,6 +25,7 @@ private actor ScriptedPoll {
         case missing
         case online
         case offlineBusy
+        case unrecognized
         case error
     }
 
@@ -48,6 +49,8 @@ private actor ScriptedPoll {
             return .registered(GitHubService.RunnerStatus(connection: .online, busy: false))
         case .offlineBusy:
             return .registered(GitHubService.RunnerStatus(connection: .offline, busy: true))
+        case .unrecognized:
+            return .registered(GitHubService.RunnerStatus(connection: .unrecognized("weird"), busy: false))
         case .error:
             throw PollError()
         }
@@ -231,6 +234,74 @@ struct OfflineMonitorTests {
         let warnings = contents.split(separator: "\n").filter { $0.contains("busy but offline") }
         #expect(calls >= 8, "the test is vacuous unless both busy-offline entries were polled")
         #expect(warnings.count == 2, "the freeze warning must fire once per busy-offline entry, not per poll")
+    }
+
+    @Test func busyOfflineFreezeRewarnsPeriodicallyAndEventuallyAlarms() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let path = tempDir.appendingPathComponent("sand.log").path
+        let sink = try LogFileSink(path: path)
+        let poll = ScriptedPoll([.offlineBusy])
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { try await poll.next() },
+            onRecycle: { _, _ in },
+            logger: Logger(label: "test", minimumLevel: .info, sink: sink)
+        )
+        let task = Task { await monitor.run() }
+        var calls = 0
+        var attempts = 0
+        while calls < 35, attempts < 400 {
+            attempts += 1
+            try? await Task.sleep(for: .milliseconds(5))
+            calls = await poll.calls
+        }
+        task.cancel()
+        await task.value
+        let lines = ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "").split(separator: "\n")
+        let rewarns = lines.filter { $0.contains("offline timer still frozen") }
+        let alarms = lines.filter { $0.contains("may be wedged") }
+        #expect(calls >= 35, "the test is vacuous unless the freeze held past the alarm threshold")
+        #expect(rewarns.count >= 2, "a held freeze must keep announcing itself")
+        #expect(rewarns.count <= calls / 10 + 1, "the re-warn must be periodic, not per poll")
+        #expect(alarms.count == 1, "a long-held freeze must escalate to a single error alarm")
+    }
+
+    @Test func unrecognizedStatusFreezeIsWarnedOncePerEntry() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let path = tempDir.appendingPathComponent("sand.log").path
+        let sink = try LogFileSink(path: path)
+        let poll = ScriptedPoll(
+            [.unrecognized, .unrecognized, .online, .unrecognized, .online],
+            repeats: false
+        )
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { try await poll.next() },
+            onRecycle: { _, _ in },
+            logger: Logger(label: "test", minimumLevel: .info, sink: sink)
+        )
+        let task = Task { await monitor.run() }
+        var calls = 0
+        var attempts = 0
+        while calls < 8, attempts < 200 {
+            attempts += 1
+            try? await Task.sleep(for: .milliseconds(5))
+            calls = await poll.calls
+        }
+        task.cancel()
+        await task.value
+        let contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let warnings = contents.split(separator: "\n").filter { $0.contains("unrecognized status (weird)") }
+        #expect(calls >= 8, "the test is vacuous unless both unrecognized entries were polled")
+        #expect(warnings.count == 2, "an unrecognized status must be visible at the default log level, once per entry")
     }
 
     @Test func busyRunnerNeverRecyclesAndErrorsFreeze() async {
