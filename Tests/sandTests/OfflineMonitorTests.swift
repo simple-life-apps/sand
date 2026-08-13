@@ -24,6 +24,7 @@ private actor ScriptedPoll {
     enum Step {
         case missing
         case online
+        case offlineBusy
         case error
     }
 
@@ -43,6 +44,8 @@ private actor ScriptedPoll {
             return .notRegistered
         case .online:
             return .registered(GitHubService.RunnerStatus(connection: .online, busy: false))
+        case .offlineBusy:
+            return .registered(GitHubService.RunnerStatus(connection: .offline, busy: true))
         case .error:
             throw PollError()
         }
@@ -185,6 +188,40 @@ struct OfflineMonitorTests {
         let events = await recorder.events
         #expect(events.count == 1)
         #expect(events[0].cause == .missing)
+    }
+
+    @Test func busyOfflineFreezeIsWarnedOncePerEntry() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let path = tempDir.appendingPathComponent("sand.log").path
+        let sink = try LogFileSink(path: path)
+        let poll = ScriptedPoll([
+            .offlineBusy, .offlineBusy, .online, .offlineBusy,
+            .online, .online, .online, .online, .online, .online, .online, .online
+        ])
+        let monitor = OfflineMonitor(
+            runnerName: "r-1",
+            threshold: .seconds(3600),
+            pollInterval: .milliseconds(2),
+            poll: { try await poll.next() },
+            onRecycle: { _, _ in },
+            logger: Logger(label: "test", minimumLevel: .debug, sink: sink)
+        )
+        let task = Task { await monitor.run() }
+        var calls = 0
+        var attempts = 0
+        while calls < 8, attempts < 200 {
+            attempts += 1
+            try? await Task.sleep(for: .milliseconds(5))
+            calls = await poll.calls
+        }
+        task.cancel()
+        await task.value
+        let contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let warnings = contents.split(separator: "\n").filter { $0.contains("busy but offline") }
+        #expect(calls >= 8, "the test is vacuous unless both busy-offline entries were polled")
+        #expect(warnings.count == 2, "the freeze warning must fire once per busy-offline entry, not per poll")
     }
 
     @Test func busyRunnerNeverRecyclesAndErrorsFreeze() async {

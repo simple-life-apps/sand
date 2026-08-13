@@ -43,12 +43,18 @@ struct OfflineMonitor: Sendable {
         var consecutivePollFailures = 0
         var alarmed = false
         var missingStreak = 0
+        var busyOfflineRun = false
         while !Task.isCancelled {
             let signal: OfflineTimer.Signal
             do {
                 let lookup = try await poll()
                 signal = Self.signal(for: lookup)
                 missingStreak = lookup == .notRegistered ? missingStreak + 1 : 0
+                let isBusyOffline = lookup == .registered(.init(connection: .offline, busy: true))
+                if isBusyOffline, !busyOfflineRun {
+                    logger.warning("runner \(runnerName) reported busy but offline on GitHub; offline timer frozen until the job is reaped or the runner reconnects")
+                }
+                busyOfflineRun = isBusyOffline
                 consecutivePollFailures = 0
                 alarmed = false
             } catch {
