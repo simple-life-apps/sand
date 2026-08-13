@@ -41,11 +41,28 @@ no new config keys.
 - `online` → `.healthy` (busy irrelevant; idle runners stay healthy)
 - `offline && busy` → `.unknown` (timer freezes: no accrual, no reset)
 - `offline && !busy` → `.offline`
-- `unrecognized` → `.unknown` (unchanged)
+- `unrecognized` → `.unknown` regardless of busy (behavior change: today
+  `unrecognized && busy` maps to `.healthy` and resets the timer; under
+  connection-first mapping an unrecognized status no longer vouches for health,
+  so prior offline accumulation is preserved instead of reset)
 - `.notRegistered` → `.offline` (unchanged, backstop accrual behind the fast path)
+
+A `busy` field absent from the API response already decodes as `false`
+(`GitHubService.fetchRunnerStatus`), so `offline` with absent `busy` accrues
+offline time rather than freezing. That stays as is: GitHub's schema marks
+`busy` required, so absence is anomalous, and accruing is the recovery-friendly
+default.
 
 `OfflineTimer` is untouched: `.unknown` already clears `lastOffline` without
 resetting `accumulated`.
+
+Accepted tradeoff of freezing (2B over 2A): for the crash-mid-job sequence
+`online+busy → offline+busy` the timer holds at zero, so recycling still waits
+for GitHub to reap the job (`busy` → false, commonly ~10 minutes) plus the full
+threshold. The freeze only fixes the flap case where accumulated offline time
+was being erased. This is the deliberate risk posture: never recycle a runner
+GitHub still considers busy, even at the cost of slower recovery from mid-job
+crashes.
 
 Log a warning once on entering the `offline+busy` state (mirroring the existing
 `offlineRun` transition logs) so operators can see why the timer is frozen, and
@@ -53,20 +70,35 @@ clear that latch when the runner leaves the state.
 
 ### Missing fast path (1B)
 
-`OfflineMonitor.run()` tracks a consecutive-missing streak alongside the timer:
+`OfflineMonitor.run()` tracks a missing streak alongside the timer. The streak
+counts consecutive *successful* observations, not consecutive polls:
 
 - Successful poll returning `.notRegistered` increments the streak.
 - Successful poll finding the runner (any status) resets it to 0.
-- Failed poll leaves the streak unchanged (an error neither confirms nor denies).
+- Failed poll leaves the streak unchanged. This is deliberate: an error neither
+  confirms nor denies, and misses separated by an error gap are independent
+  samples of absence — spreading them out makes a stale-list false positive
+  less likely, not more. Three misses interleaved with arbitrarily many poll
+  errors still trigger the fast path.
 - When the streak reaches `missingPollThreshold = 3` (hardcoded `static let`),
   recycle immediately with cause "missing" instead of waiting for the timer.
 
-At the default 60s poll interval detection takes ~2 minutes. Three consecutive
+At the default 60s poll interval detection takes ~2 minutes. Three
 confirmations guard against a transiently stale empty list from the API.
 
-The fast-path check runs before the timer verdict in the poll loop, so when a
-minimal threshold (two poll intervals) and the miss streak would both trip on
-the same poll, the recycle is attributed to `missing`.
+The fast-path check runs before the timer verdict in the poll loop, so when
+both would trip on the same poll the recycle is attributed to `missing`. This
+only guarantees attribution on ties: `recycleAfterOffline` accepts any positive
+value (values below 120s merely warn), and a threshold ≤ one poll interval trips
+the timer on the second missing poll — before the third miss — so such configs
+recycle with the `offline` cause. Acceptable: the VM is recycled either way and
+sub-floor thresholds are already warned against.
+
+When `recycleAfterOffline: 0`, no monitor is constructed at all
+(`Runner.makeOfflineMonitor` is skipped), so disabling offline recycling also
+disables missing-runner detection. That is the intended meaning of "disabled":
+`0` turns off GitHub-status-based recycling entirely, and the `run.sh` exit
+path remains the only recycler.
 
 ### Distinct restart reason
 
@@ -81,9 +113,13 @@ the same poll, the recycle is attributed to `missing`.
   `"runner missing: <message>"`, backoffKey `"runnerMissing"`), mapped through
   `Runner.restartReason(for:)` and `makeOfflineMonitor`'s closure.
 
-This gives `RestartBackoff` a separate escalation track and makes logs name the
-actual cause. Messages: missing → "runner <name> no longer registered on GitHub";
-offline → existing "offline on GitHub past threshold" message.
+The distinct `backoffKey` prevents missing-caused restarts from escalating the
+`runnerOffline` attempt counter (and vice versa) and makes logs name the actual
+cause. Note `RestartBackoff` keeps only one `lastReason`, so alternating causes
+reset the attempt count to 1 each time — that is existing behavior for all
+reason kinds, not a new escalation track per key. Messages: missing →
+"runner <name> no longer registered on GitHub"; offline → existing "offline on
+GitHub past threshold" message.
 
 ### Out of scope
 
@@ -94,16 +130,34 @@ offline → existing "offline on GitHub past threshold" message.
 
 ## Testing
 
+Existing tests that encode busy-first mapping (`signalMapping()`,
+`busyRunnerNeverRecyclesAndErrorsFreeze()` in `OfflineMonitorTests`) are
+updated to the connection-first expectations.
+
 - `signal(for:)` cases: `offline+busy` → `.unknown`; `offline+idle` → `.offline`;
-  `online` (busy and idle) → `.healthy`; `.notRegistered` → `.offline`.
-- Fast path in `OfflineMonitorTests` (existing manual-clock/poll-stub style):
-  three consecutive `.notRegistered` polls trigger recycle with `.missing`;
-  two misses then a registered poll resets the streak; a poll error between
-  misses preserves the streak; offline-past-threshold still recycles with
-  `.offlinePastThreshold`.
+  `unrecognized+busy` → `.unknown`; `online` (busy and idle) → `.healthy`;
+  `.notRegistered` → `.offline`.
+- Fast path in `OfflineMonitorTests` (existing poll-stub style with short real
+  sleeps — the monitor owns its `ContinuousClock`, there is no injectable
+  clock): three `.notRegistered` polls trigger recycle with `.missing`; two
+  misses then a registered poll resets the streak; misses interleaved with
+  multiple poll errors (miss, error, error, miss, error, miss) still trigger;
+  offline-past-threshold still recycles with `.offlinePastThreshold`.
+- Fast-path priority: threshold of two poll intervals with all-missing polls
+  recycles with `.missing`, not `.offlinePastThreshold`; threshold of one poll
+  interval with all-missing polls recycles with `.offlinePastThreshold` on the
+  second poll (documents the sub-floor attribution).
 - Timer-freeze regression: offline accrual, then `offline+busy` polls, then
   offline again — accumulated time is preserved (no reset).
+- Warning latch: entering `offline+busy` logs one warning, repeated
+  `offline+busy` polls do not repeat it, and leaving then re-entering the state
+  logs again.
+- `GitHubServiceTests`: `status: "offline", busy: true` decodes to
+  offline+busy; `status: "offline"` with `busy` absent decodes to
+  offline+`busy: false`.
 - `RestartReason.runnerMissing`: description, backoffKey distinct from
-  `runnerOffline` (RestartBackoffTests escalation isolation).
-- `Runner.restartReason(for: .runnerMissing)` mapping in
-  RunnerRestartReasonTests.
+  `runnerOffline` (RestartBackoffTests: missing-then-missing escalates,
+  missing-then-offline resets).
+- `RunnerRestartReasonTests`: `restartReason(for: .runnerMissing)` and
+  `restartReason(forCompletedProvisionerWith: .runnerMissing)` both map to
+  `RestartReason.runnerMissing`.
