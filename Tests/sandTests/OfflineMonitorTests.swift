@@ -29,15 +29,17 @@ private actor ScriptedPoll {
     }
 
     private let script: [Step]
+    private let repeats: Bool
     private(set) var calls = 0
 
-    init(_ script: [Step]) {
+    init(_ script: [Step], repeats: Bool = true) {
         self.script = script
+        self.repeats = repeats
     }
 
     func next() throws -> GitHubService.RunnerLookup {
         struct PollError: Error {}
-        let step = script[calls % script.count]
+        let step = repeats ? script[calls % script.count] : script[min(calls, script.count - 1)]
         calls += 1
         switch step {
         case .missing:
@@ -97,24 +99,29 @@ struct OfflineMonitorTests {
 
     @Test func unregisteredRunnerTriggersFastRecycleWithMissingCause() async {
         let recorder = RecycleRecorder()
+        let poll = ScriptedPoll([.missing])
         let monitor = OfflineMonitor(
             runnerName: "r-1",
             threshold: .seconds(3600),
             pollInterval: .milliseconds(2),
-            poll: { .notRegistered },
+            poll: { try await poll.next() },
             onRecycle: { await recorder.record($0, $1) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
         await monitor.run()
         let events = await recorder.events
+        let calls = await poll.calls
         #expect(events.count == 1)
         #expect(events[0].cause == .missing)
         #expect(events[0].message.contains("no longer registered"))
+        #expect(calls == 3, "the fast path must wait for exactly three confirming polls")
     }
 
     @Test func registeredPollResetsTheMissingStreak() async {
         let recorder = RecycleRecorder()
-        let poll = ScriptedPoll([.missing, .missing, .online])
+        // Any registered status resets the streak, including one that freezes
+        // the timer; only a lookup that finds no runner may extend it.
+        let poll = ScriptedPoll([.missing, .missing, .offlineBusy, .missing, .missing, .online])
         let monitor = OfflineMonitor(
             runnerName: "r-1",
             threshold: .seconds(3600),
@@ -178,8 +185,8 @@ struct OfflineMonitorTests {
         let recorder = RecycleRecorder()
         let monitor = OfflineMonitor(
             runnerName: "r-1",
-            threshold: .milliseconds(60),
-            pollInterval: .milliseconds(30),
+            threshold: .milliseconds(200),
+            pollInterval: .milliseconds(100),
             poll: { .notRegistered },
             onRecycle: { await recorder.record($0, $1) },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
@@ -196,10 +203,10 @@ struct OfflineMonitorTests {
         defer { try? FileManager.default.removeItem(at: tempDir) }
         let path = tempDir.appendingPathComponent("sand.log").path
         let sink = try LogFileSink(path: path)
-        let poll = ScriptedPoll([
-            .offlineBusy, .offlineBusy, .online, .offlineBusy,
-            .online, .online, .online, .online, .online, .online, .online, .online
-        ])
+        let poll = ScriptedPoll(
+            [.offlineBusy, .offlineBusy, .online, .offlineBusy, .online],
+            repeats: false
+        )
         let monitor = OfflineMonitor(
             runnerName: "r-1",
             threshold: .seconds(3600),
