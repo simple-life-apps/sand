@@ -46,6 +46,13 @@ enum RestartReason: Equatable, CustomStringConvertible {
             return "provisionerExited"
         }
     }
+
+    var escalatesBackoff: Bool {
+        if case .provisionerExited = self {
+            return false
+        }
+        return true
+    }
 }
 
 struct RestartBackoffPolicy {
@@ -82,7 +89,7 @@ actor RestartBackoff {
 
     @discardableResult
     func schedule(reason: RestartReason) -> TimeInterval {
-        if let lastReason, lastReason.backoffKey == reason.backoffKey {
+        if reason.escalatesBackoff, let lastReason, lastReason.backoffKey == reason.backoffKey {
             attempt += 1
         } else {
             attempt = 1

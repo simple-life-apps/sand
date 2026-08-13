@@ -66,6 +66,26 @@ final class RestartBackoffTests: XCTestCase {
         XCTAssertEqual(third, 1, "a cause change resets the attempt count; the keys must not share an escalation counter")
     }
 
+    func testProvisionerExitedNeverEscalates() async {
+        let policy = RestartBackoffPolicy(baseDelay: 1, maxDelay: 60, multiplier: 2)
+        let backoff = RestartBackoff(policy: policy)
+        for _ in 0..<5 {
+            let delay = await backoff.schedule(reason: .provisionerExited)
+            XCTAssertEqual(delay, 1, "a clean ephemeral runner cycle is not a failure; the delay between jobs must stay at the base")
+        }
+    }
+
+    func testFailureAfterProvisionerExitedStartsAtBaseDelay() async {
+        let policy = RestartBackoffPolicy(baseDelay: 1, maxDelay: 60, multiplier: 2)
+        let backoff = RestartBackoff(policy: policy)
+        _ = await backoff.schedule(reason: .provisionerExited)
+        _ = await backoff.schedule(reason: .provisionerExited)
+        let failure = await backoff.schedule(reason: .sshNotReady)
+        let repeated = await backoff.schedule(reason: .sshNotReady)
+        XCTAssertEqual(failure, 1)
+        XCTAssertEqual(repeated, 2)
+    }
+
     func testRunnerOfflineReasonDescriptionAndEquality() {
         let reason = RestartReason.runnerOffline("runner r-1 offline on GitHub for 600s+")
         XCTAssertEqual(String(describing: reason), "runner offline: runner r-1 offline on GitHub for 600s+")
