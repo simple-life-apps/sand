@@ -35,11 +35,13 @@ struct OfflineMonitorTests {
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .offline, busy: false))) == .offline)
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .online, busy: false))) == .healthy)
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .online, busy: true))) == .healthy)
-        // Busy wins even if GitHub reports the runner offline mid-job.
-        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .offline, busy: true))) == .healthy)
+        // A busy claim without an online connection freezes the timer rather
+        // than vouching for health: GitHub keeps busy=true for a runner that
+        // died mid-job until the job is reaped.
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .offline, busy: true))) == .unknown)
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized("idle"), busy: false))) == .unknown)
         #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: false))) == .unknown)
-        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: true))) == .healthy)
+        #expect(OfflineMonitor.signal(for: .registered(.init(connection: .unrecognized(nil), busy: true))) == .unknown)
     }
 
     @Test func permanentlyOfflineRunnerTriggersRecycle() async {

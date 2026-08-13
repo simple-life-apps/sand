@@ -13,14 +13,11 @@ struct OfflineMonitor: Sendable {
         case .notRegistered:
             return .offline
         case let .registered(status):
-            if status.busy {
-                return .healthy
-            }
             switch status.connection {
             case .online:
                 return .healthy
             case .offline:
-                return .offline
+                return status.busy ? .unknown : .offline
             case .unrecognized:
                 return .unknown
             }
