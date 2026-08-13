@@ -165,7 +165,7 @@ struct Runner: Sendable {
                 }
                 logger.info("preRun finished")
             } catch {
-                if await handleStageFailure(error, stage: "preRun", healthCheckState: nil) {
+                if await handleStageFailure(error, stage: "preRun", monitorState: nil) {
                     await shutdownCoordinator.cleanup(reason: "preRun failed")
                     return
                 }
@@ -173,21 +173,16 @@ struct Runner: Sendable {
                 throw error
             }
         }
-        let healthCheckState = MonitorFailureState()
+        let monitorState = MonitorFailureState()
         logger.debug("healthCheck task preparing (vm=\(name))")
         let healthCheckTask = startHealthCheck(
             healthCheck: config.healthCheck ?? .standard,
             vmName: name,
             ssh: vm.ssh,
             control: control,
-            state: healthCheckState
+            state: monitorState
         )
         await control.setHealthCheckTask(healthCheckTask)
-        func stopHealthCheck(_ task: Task<Void, Never>) async {
-            logger.debug("healthCheck task cancel requested")
-            task.cancel()
-            await control.clearHealthCheckTask()
-        }
         do {
             switch provisionerConfig.type {
             case .script:
@@ -195,26 +190,11 @@ struct Runner: Sendable {
                     throw RunnerError.missingScript
                 }
                 logger.info("run script provisioner")
-                let outcome = await runProvisionerCommands([run], ssh: ssh, healthCheckState: healthCheckState)
-                switch outcome {
-                case .completed:
-                    logger.info("script provisioner finished")
-                case let .failed(error):
-                    if await handleStageFailure(error, stage: "provisioner", healthCheckState: healthCheckState) {
-                        await stopHealthCheck(healthCheckTask)
-                        await shutdownCoordinator.cleanup(reason: "provisioner failed")
-                        return
-                    }
-                    await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: "provisioner failed")
-                    throw error
-                case let .monitorFailed(failure):
-                    let reason = Self.restartReason(for: failure)
-                    await scheduleRestart(reason: reason)
-                    await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: String(describing: reason))
+                let outcome = await runProvisionerCommands([run], ssh: ssh, monitorState: monitorState)
+                guard try await finishStage(outcome, healthCheckTask: healthCheckTask, monitorState: monitorState) else {
                     return
                 }
+                logger.info("script provisioner finished")
             case .github:
                 guard let github, let githubConfig = provisionerConfig.github else {
                     throw RunnerError.missingGitHub
@@ -237,24 +217,8 @@ struct Runner: Sendable {
                 let cacheManager = RunnerCacheManager(cacheDirectory: runnerCacheHostPath, logger: logger)
                 try await preseedRunner(cacheManager: cacheManager, ssh: ssh)
                 let script = provisioner.script(config: githubConfig, runnerToken: token, runnerName: uniqueRunnerName)
-                let setupOutcome = await runProvisionerCommands(script.setup, ssh: ssh, healthCheckState: healthCheckState)
-                switch setupOutcome {
-                case .completed:
-                    break
-                case let .failed(error):
-                    if await handleStageFailure(error, stage: "provisioner", healthCheckState: healthCheckState) {
-                        await stopHealthCheck(healthCheckTask)
-                        await shutdownCoordinator.cleanup(reason: "provisioner failed")
-                        return
-                    }
-                    await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: "provisioner failed")
-                    throw error
-                case let .monitorFailed(failure):
-                    let reason = Self.restartReason(for: failure)
-                    await scheduleRestart(reason: reason)
-                    await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: String(describing: reason))
+                let setupOutcome = await runProvisionerCommands(script.setup, ssh: ssh, monitorState: monitorState)
+                guard try await finishStage(setupOutcome, healthCheckTask: healthCheckTask, monitorState: monitorState) else {
                     return
                 }
                 let monitor = githubConfig.recycleAfterOffline.threshold.map { threshold in
@@ -263,52 +227,28 @@ struct Runner: Sendable {
                         runnerName: uniqueRunnerName,
                         threshold: threshold,
                         control: control,
-                        state: healthCheckState
+                        state: monitorState
                     )
                 }
                 if monitor == nil {
                     logger.info("offline monitor disabled (recycleAfterOffline: 0)")
                 }
-                let outcome = await runProvisionerCommandsMonitored(
-                    [script.run],
-                    monitor: monitor,
-                    ssh: ssh,
-                    healthCheckState: healthCheckState
-                )
-                switch outcome {
-                case .completed:
-                    let reason = Self.restartReason(forCompletedProvisionerWith: await healthCheckState.failure())
-                    logger.warning("github provisioner completed; runner exited, restarting VM (\(reason))")
-                    await scheduleRestart(reason: reason)
-                    await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: String(describing: reason))
-                    return
-                case let .failed(error):
-                    if await handleStageFailure(error, stage: "provisioner", healthCheckState: healthCheckState) {
-                        await stopHealthCheck(healthCheckTask)
-                        await shutdownCoordinator.cleanup(reason: "provisioner failed")
-                        return
-                    }
-                    await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: "provisioner failed")
-                    throw error
-                case let .monitorFailed(failure):
-                    let reason = Self.restartReason(for: failure)
-                    await scheduleRestart(reason: reason)
-                    await stopHealthCheck(healthCheckTask)
-                    await shutdownCoordinator.cleanup(reason: String(describing: reason))
+                let outcome = await Self.withOfflineMonitor(monitor) {
+                    await runProvisionerCommands([script.run], ssh: ssh, monitorState: monitorState)
+                }
+                guard try await finishStage(outcome, healthCheckTask: healthCheckTask, monitorState: monitorState) else {
                     return
                 }
-            }
-        } catch {
-            if await handleStageFailure(error, stage: "provisioner", healthCheckState: healthCheckState) {
+                let reason = Self.restartReason(forCompletedProvisionerWith: await monitorState.failure())
+                logger.warning("github provisioner completed; runner exited, restarting VM (\(reason))")
+                await scheduleRestart(reason: reason)
                 await stopHealthCheck(healthCheckTask)
-                await shutdownCoordinator.cleanup(reason: "provisioner failed")
+                await shutdownCoordinator.cleanup(reason: String(describing: reason))
                 return
             }
-            await stopHealthCheck(healthCheckTask)
-            await shutdownCoordinator.cleanup(reason: "provisioner failed")
-            throw error
+        } catch {
+            _ = try await finishStage(.failed(error), healthCheckTask: healthCheckTask, monitorState: monitorState)
+            return
         }
         if let postRun = config.postRun {
             logger.info("run postRun")
@@ -321,7 +261,7 @@ struct Runner: Sendable {
                 }
                 logger.info("postRun finished")
             } catch {
-                if await handleStageFailure(error, stage: "postRun", healthCheckState: healthCheckState) {
+                if await handleStageFailure(error, stage: "postRun", monitorState: monitorState) {
                     await stopHealthCheck(healthCheckTask)
                     await shutdownCoordinator.cleanup(reason: "postRun failed")
                     return
@@ -331,7 +271,7 @@ struct Runner: Sendable {
                 throw error
             }
         }
-        if let failure = await healthCheckState.failure() {
+        if let failure = await monitorState.failure() {
             let reason = Self.restartReason(for: failure)
             await scheduleRestart(reason: reason)
             await stopHealthCheck(healthCheckTask)
@@ -665,7 +605,36 @@ struct Runner: Sendable {
         }
     }
 
-    private static let offlinePollInterval: Duration = OfflineMonitor.defaultPollInterval
+    private func stopHealthCheck(_ task: Task<Void, Never>) async {
+        logger.debug("healthCheck task cancel requested")
+        task.cancel()
+        await control.clearHealthCheckTask()
+    }
+
+    private func finishStage(
+        _ outcome: ProvisionerOutcome<Void>,
+        healthCheckTask: Task<Void, Never>,
+        monitorState: MonitorFailureState
+    ) async throws -> Bool {
+        switch outcome {
+        case .completed:
+            return true
+        case let .failed(error):
+            let handled = await handleStageFailure(error, stage: "provisioner", monitorState: monitorState)
+            await stopHealthCheck(healthCheckTask)
+            await shutdownCoordinator.cleanup(reason: "provisioner failed")
+            if handled {
+                return false
+            }
+            throw error
+        case let .monitorFailed(failure):
+            let reason = Self.restartReason(for: failure)
+            await scheduleRestart(reason: reason)
+            await stopHealthCheck(healthCheckTask)
+            await shutdownCoordinator.cleanup(reason: String(describing: reason))
+            return false
+        }
+    }
 
     private func makeOfflineMonitor(
         github: GitHubService,
@@ -674,11 +643,11 @@ struct Runner: Sendable {
         control: RunnerControl,
         state: MonitorFailureState
     ) -> OfflineMonitor {
-        logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(threshold.components.seconds)s, poll=\(Self.offlinePollInterval.components.seconds)s)")
+        logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(threshold.components.seconds)s, poll=\(OfflineMonitor.defaultPollInterval.components.seconds)s)")
         return OfflineMonitor(
             runnerName: runnerName,
             threshold: threshold,
-            pollInterval: Self.offlinePollInterval,
+            pollInterval: OfflineMonitor.defaultPollInterval,
             poll: { try await github.runnerStatus(named: runnerName) },
             onRecycle: Self.monitorRecycleHandler(
                 markFailed: { await state.markFailed($0) },
@@ -727,24 +696,13 @@ struct Runner: Sendable {
         case monitorFailed(MonitorFailure)
     }
 
-    private func runProvisionerCommandsMonitored(
-        _ commands: [String],
-        monitor: OfflineMonitor?,
-        ssh: SSHClient,
-        healthCheckState: MonitorFailureState
-    ) async -> ProvisionerOutcome<Void> {
-        await Self.withOfflineMonitor(monitor) {
-            await runProvisionerCommands(commands, ssh: ssh, healthCheckState: healthCheckState)
-        }
-    }
-
     private func runProvisionerCommands(
         _ commands: [String],
         ssh: SSHClient,
-        healthCheckState: MonitorFailureState
+        monitorState: MonitorFailureState
     ) async -> ProvisionerOutcome<Void> {
         for command in commands {
-            let outcome = await runProvisionerCommand(command, ssh: ssh, healthCheckState: healthCheckState)
+            let outcome = await runProvisionerCommand(command, ssh: ssh, monitorState: monitorState)
             switch outcome {
             case .completed:
                 continue
@@ -760,7 +718,7 @@ struct Runner: Sendable {
     private func runProvisionerCommand(
         _ command: String,
         ssh: SSHClient,
-        healthCheckState: MonitorFailureState
+        monitorState: MonitorFailureState
     ) async -> ProvisionerOutcome<ProcessResult> {
         logScript(command)
         var attempt = 0
@@ -772,7 +730,7 @@ struct Runner: Sendable {
                 let handle = try ssh.start(command: command)
                 await control.setProvisioningHandle(handle)
                 logger.debug("\(labeledCommand) started; awaiting completion or healthCheck failure")
-                let outcome = await awaitProvisionerCommand(handle: handle, healthCheckState: healthCheckState)
+                let outcome = await awaitProvisionerCommand(handle: handle, monitorState: monitorState)
                 switch outcome {
                 case let .completed(result):
                     let stdoutLabel = commandLabel.isEmpty ? "stdout" : "stdout (\(commandLabel))"
@@ -813,7 +771,7 @@ struct Runner: Sendable {
 
     private func awaitProvisionerCommand(
         handle: ProcessHandle,
-        healthCheckState: MonitorFailureState
+        monitorState: MonitorFailureState
     ) async -> ProvisionerOutcome<ProcessResult> {
         await withTaskGroup(of: ProvisionerOutcome<ProcessResult>?.self) { group in
             group.addTask {
@@ -826,7 +784,7 @@ struct Runner: Sendable {
             }
             group.addTask {
                 do {
-                    let failure = try await healthCheckState.waitForFailure()
+                    let failure = try await monitorState.waitForFailure()
                     return .monitorFailed(failure)
                 } catch is CancellationError {
                     return nil
@@ -1072,8 +1030,8 @@ struct Runner: Sendable {
         vmLogger.log(.info, "[executing]\n\(script)")
     }
 
-    private func handleStageFailure(_ error: Error, stage: String, healthCheckState: MonitorFailureState?) async -> Bool {
-        if let healthCheckState, let failure = await healthCheckState.failure() {
+    private func handleStageFailure(_ error: Error, stage: String, monitorState: MonitorFailureState?) async -> Bool {
+        if let monitorState, let failure = await monitorState.failure() {
             logger.debug("\(stage) failed while monitor already failed: \(failure.message)")
             await scheduleRestart(reason: Self.restartReason(for: failure))
             return true

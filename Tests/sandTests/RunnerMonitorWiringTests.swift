@@ -15,15 +15,6 @@ private actor RecycleWiringRecorder {
     }
 }
 
-private actor PollCounter {
-    private(set) var calls = 0
-
-    func next() -> GitHubService.RunnerLookup {
-        calls += 1
-        return .registered(GitHubService.RunnerStatus(connection: .online, busy: false))
-    }
-}
-
 @Suite(.timeLimit(.minutes(1)))
 struct RunnerMonitorWiringTests {
     @Test func offlineCauseIsAttributedAsRunnerOfflineAndTerminatesProvisioning() async {
@@ -49,23 +40,17 @@ struct RunnerMonitorWiringTests {
     }
 
     @Test func monitorIsCancelledWhenTheBodyReturns() async {
-        let poll = PollCounter()
+        let poll = ScriptedPoll([.online])
         let monitor = OfflineMonitor(
             runnerName: "r-1",
             threshold: .seconds(3600),
             pollInterval: .milliseconds(2),
-            poll: { await poll.next() },
+            poll: { try await poll.next() },
             onRecycle: { _, _ in },
             logger: Logger(label: "test", minimumLevel: .error, sink: nil)
         )
         let result = await Runner.withOfflineMonitor(monitor) {
-            var calls = 0
-            var attempts = 0
-            while calls < 3, attempts < 200 {
-                attempts += 1
-                try? await Task.sleep(for: .milliseconds(5))
-                calls = await poll.calls
-            }
+            await poll.waitForCalls(atLeast: 3, attempts: 200)
             return "done"
         }
         #expect(result == "done")

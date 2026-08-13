@@ -1,4 +1,58 @@
 import Foundation
+@testable import sand
+
+actor ScriptedPoll {
+    enum Step {
+        case missing
+        case online
+        case onlineBusy
+        case offline
+        case offlineBusy
+        case unrecognized
+        case error
+    }
+
+    private let script: [Step]
+    private let repeats: Bool
+    private(set) var calls = 0
+
+    init(_ script: [Step], repeats: Bool = true) {
+        self.script = script
+        self.repeats = repeats
+    }
+
+    func next() throws -> GitHubService.RunnerLookup {
+        struct PollError: Error {}
+        let step = repeats ? script[calls % script.count] : script[min(calls, script.count - 1)]
+        calls += 1
+        switch step {
+        case .missing:
+            return .notRegistered
+        case .online:
+            return .registered(GitHubService.RunnerStatus(connection: .online, busy: false))
+        case .onlineBusy:
+            return .registered(GitHubService.RunnerStatus(connection: .online, busy: true))
+        case .offline:
+            return .registered(GitHubService.RunnerStatus(connection: .offline, busy: false))
+        case .offlineBusy:
+            return .registered(GitHubService.RunnerStatus(connection: .offline, busy: true))
+        case .unrecognized:
+            return .registered(GitHubService.RunnerStatus(connection: .unrecognized("weird"), busy: false))
+        case .error:
+            throw PollError()
+        }
+    }
+
+    @discardableResult
+    func waitForCalls(atLeast target: Int, attempts: Int = 400) async -> Int {
+        var remaining = attempts
+        while calls < target, remaining > 0 {
+            remaining -= 1
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return calls
+    }
+}
 
 enum TestHelperError: Error {
     case invalidTokenPartsCount

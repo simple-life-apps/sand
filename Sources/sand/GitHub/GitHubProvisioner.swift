@@ -15,27 +15,23 @@ enum OfflineRecycling: Equatable, Sendable {
         }
     }
 
-    enum ParseError: Error, CustomStringConvertible {
-        case notFinite
-        case negative
-        case exceedsOneYear
+}
 
-        var description: String {
-            switch self {
-            case .notFinite:
-                return "recycleAfterOffline must be a finite number of seconds."
-            case .negative:
-                return "recycleAfterOffline must be >= 0 (0 disables offline recycling)."
-            case .exceedsOneYear:
-                return "recycleAfterOffline must be at most 31536000 seconds (one year)."
-            }
+extension OfflineRecycling: Decodable {
+    init(from decoder: Decoder) throws {
+        let seconds = try decoder.singleValueContainer().decode(TimeInterval.self)
+        func corrupted(_ message: String) -> DecodingError {
+            DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: message))
         }
-    }
-
-    init(seconds: TimeInterval) throws {
-        guard seconds.isFinite else { throw ParseError.notFinite }
-        guard seconds >= 0 else { throw ParseError.negative }
-        guard seconds <= 31_536_000 else { throw ParseError.exceedsOneYear }
+        guard seconds.isFinite else {
+            throw corrupted("recycleAfterOffline must be a finite number of seconds.")
+        }
+        guard seconds >= 0 else {
+            throw corrupted("recycleAfterOffline must be >= 0 (0 disables offline recycling).")
+        }
+        guard seconds <= 31_536_000 else {
+            throw corrupted("recycleAfterOffline must be at most 31536000 seconds (one year).")
+        }
         self = seconds == 0 ? .disabled : .after(.seconds(seconds))
     }
 }
@@ -79,19 +75,7 @@ struct GitHubProvisionerConfig: Decodable, Sendable {
         self.runnerName = try container.decode(String.self, forKey: .runnerName)
         self.extraLabels = try container.decodeIfPresent([String].self, forKey: .extraLabels)
         self.runnerGroup = try container.decodeIfPresent(String.self, forKey: .runnerGroup)
-        if let seconds = try container.decodeIfPresent(TimeInterval.self, forKey: .recycleAfterOffline) {
-            do {
-                self.recycleAfterOffline = try OfflineRecycling(seconds: seconds)
-            } catch {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .recycleAfterOffline,
-                    in: container,
-                    debugDescription: String(describing: error)
-                )
-            }
-        } else {
-            self.recycleAfterOffline = .default
-        }
+        self.recycleAfterOffline = try container.decodeIfPresent(OfflineRecycling.self, forKey: .recycleAfterOffline) ?? .default
     }
 
     private enum CodingKeys: String, CodingKey {

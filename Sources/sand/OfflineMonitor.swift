@@ -14,40 +14,26 @@ struct OfflineMonitor: Sendable {
     let onRecycle: @Sendable (RecycleCause, String) async -> Void
     let logger: Logger
 
-    static func signal(for lookup: GitHubService.RunnerLookup) -> OfflineTimer.Signal {
+    static func classify(_ lookup: GitHubService.RunnerLookup) -> (signal: OfflineTimer.Signal, freezeReason: String?) {
         switch lookup {
         case .notRegistered:
-            return .offline
+            return (.offline, nil)
         case let .registered(status):
             switch status.connection {
             case .online:
-                return .healthy
+                return (.healthy, nil)
             case .offline:
-                return status.busy == false ? .offline : .unknown
-            case .unrecognized:
-                return .unknown
+                switch status.busy {
+                case .some(false):
+                    return (.offline, nil)
+                case .some(true):
+                    return (.unknown, "busy but offline")
+                case .none:
+                    return (.unknown, "offline with unknown busy state")
+                }
+            case let .unrecognized(raw):
+                return (.unknown, "unrecognized status (\(raw ?? "absent"))")
             }
-        }
-    }
-
-    static func freezeReason(for lookup: GitHubService.RunnerLookup) -> String? {
-        guard case let .registered(status) = lookup else {
-            return nil
-        }
-        switch status.connection {
-        case .online:
-            return nil
-        case .offline:
-            switch status.busy {
-            case .some(false):
-                return nil
-            case .some(true):
-                return "busy but offline"
-            case .none:
-                return "offline with unknown busy state"
-            }
-        case let .unrecognized(raw):
-            return "unrecognized status (\(raw ?? "absent"))"
         }
     }
 
@@ -59,6 +45,52 @@ struct OfflineMonitor: Sendable {
     private static let freezeRewarnPollInterval = 10
     private static let freezeAlarmPollThreshold = 30
 
+    struct FreezeTracker {
+        enum Event: Equatable {
+            case entered(reason: String)
+            case wedged(reason: String, frozenFor: Duration)
+            case stillFrozen(reason: String, frozenFor: Duration)
+        }
+
+        private var polls = 0
+        private var start: ContinuousClock.Instant?
+        private var lastReason: String?
+        private var alarmed = false
+
+        mutating func observe(reason: String?, now: ContinuousClock.Instant) -> Event? {
+            guard let reason else {
+                self = FreezeTracker()
+                return nil
+            }
+            let start = self.start ?? now
+            self.start = start
+            polls += 1
+            if reason != lastReason {
+                lastReason = reason
+                return .entered(reason: reason)
+            }
+            if polls >= OfflineMonitor.freezeAlarmPollThreshold, !alarmed {
+                alarmed = true
+                return .wedged(reason: reason, frozenFor: start.duration(to: now))
+            }
+            if polls % OfflineMonitor.freezeRewarnPollInterval == 0 {
+                return .stillFrozen(reason: reason, frozenFor: start.duration(to: now))
+            }
+            return nil
+        }
+    }
+
+    private func log(_ event: FreezeTracker.Event) {
+        switch event {
+        case let .entered(reason):
+            logger.warning("runner \(runnerName) reported \(reason) on GitHub; offline timer frozen until it recovers")
+        case let .wedged(reason, frozenFor):
+            logger.error("runner \(runnerName) offline timer frozen for \(Self.seconds(frozenFor))s (\(reason)); the runner may be wedged and will not be recycled while frozen")
+        case let .stillFrozen(reason, frozenFor):
+            logger.warning("runner \(runnerName) offline timer still frozen after \(Self.seconds(frozenFor))s (\(reason))")
+        }
+    }
+
     func run() async {
         let clock = ContinuousClock()
         var timer = OfflineTimer(threshold: threshold)
@@ -66,34 +98,16 @@ struct OfflineMonitor: Sendable {
         var consecutivePollFailures = 0
         var alarmed = false
         var missingStreak = 0
-        var freezePolls = 0
-        var freezeStart: ContinuousClock.Instant?
-        var lastFreezeReason: String?
-        var freezeAlarmed = false
+        var freeze = FreezeTracker()
         while !Task.isCancelled {
             let signal: OfflineTimer.Signal
             do {
                 let lookup = try await poll()
-                signal = Self.signal(for: lookup)
+                let (classifiedSignal, freezeReason) = Self.classify(lookup)
+                signal = classifiedSignal
                 missingStreak = lookup == .notRegistered ? missingStreak + 1 : 0
-                if let freezeReason = Self.freezeReason(for: lookup) {
-                    let start = freezeStart ?? clock.now
-                    freezeStart = start
-                    freezePolls += 1
-                    if freezeReason != lastFreezeReason {
-                        lastFreezeReason = freezeReason
-                        logger.warning("runner \(runnerName) reported \(freezeReason) on GitHub; offline timer frozen until it recovers")
-                    } else if freezePolls >= Self.freezeAlarmPollThreshold, !freezeAlarmed {
-                        freezeAlarmed = true
-                        logger.error("runner \(runnerName) offline timer frozen for \(Self.seconds(start.duration(to: clock.now)))s (\(freezeReason)); the runner may be wedged and will not be recycled while frozen")
-                    } else if freezePolls % Self.freezeRewarnPollInterval == 0 {
-                        logger.warning("runner \(runnerName) offline timer still frozen after \(Self.seconds(start.duration(to: clock.now)))s (\(freezeReason))")
-                    }
-                } else {
-                    freezePolls = 0
-                    freezeStart = nil
-                    lastFreezeReason = nil
-                    freezeAlarmed = false
+                if let event = freeze.observe(reason: freezeReason, now: clock.now) {
+                    log(event)
                 }
                 consecutivePollFailures = 0
                 alarmed = false

@@ -109,23 +109,7 @@ final class ConfigTests: XCTestCase {
     }
 
     func testGitHubProvisionerRecycleAfterOfflineDefault() throws {
-        let yaml = """
-        runners:
-          - name: runner-1
-            vm:
-              source:
-                type: oci
-                image: ghcr.io/acme/vm:latest
-            provisioner:
-              type: github
-              config:
-                appId: 42
-                organization: acme
-                privateKeyPath: ~/key.pem
-                runnerName: runner-1
-        """
-        let url = try writeTempFile(contents: yaml)
-        let config = try Config.load(path: url.path)
+        let config = try Config.load(path: writeGithubConfig().path)
         XCTAssertEqual(config.runners.first?.provisioner.github?.recycleAfterOffline, .after(.seconds(600)))
     }
 
@@ -167,7 +151,8 @@ final class ConfigTests: XCTestCase {
         }
     }
 
-    private func writeGithubConfig(recycleAfterOffline: String) throws -> URL {
+    private func writeGithubConfig(recycleAfterOffline: String? = nil) throws -> URL {
+        let recycleLine = recycleAfterOffline.map { "\n        recycleAfterOffline: \($0)" } ?? ""
         let yaml = """
         runners:
           - name: runner-1
@@ -181,8 +166,7 @@ final class ConfigTests: XCTestCase {
                 appId: 42
                 organization: acme
                 privateKeyPath: ~/key.pem
-                runnerName: runner-1
-                recycleAfterOffline: \(recycleAfterOffline)
+                runnerName: runner-1\(recycleLine)
         """
         return try writeTempFile(contents: yaml)
     }

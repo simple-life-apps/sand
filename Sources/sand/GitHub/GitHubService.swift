@@ -60,20 +60,26 @@ struct GitHubService: Sendable {
     let tokenCache = GitHubTokenCache()
 
     func runnerRegistrationToken() async throws -> String {
-        let installationId = try await installationID()
-        let accessToken = try await installationAccessToken(installationId: installationId)
-        let tokenResponse: RunnerTokenResponse = try await request(path: registrationTokenPath(), method: "POST", token: accessToken)
+        let tokenResponse: RunnerTokenResponse = try await withInstallationToken { accessToken in
+            try await request(path: registrationTokenPath(), method: "POST", token: accessToken)
+        }
         return tokenResponse.token
     }
 
     func deleteRunner(named name: String) async throws -> Bool {
-        let installationId = try await installationID()
-        let accessToken = try await installationAccessToken(installationId: installationId)
-        guard let runner = try await findRunner(named: name, token: accessToken, requireVerifiedAbsence: false) else {
-            return false
+        try await withInstallationToken { accessToken in
+            let runner: RunnersListResponse.Runner?
+            do {
+                runner = try await findRunner(named: name, token: accessToken)
+            } catch GitHubServiceError.unverifiedRunnerAbsence {
+                return false
+            }
+            guard let runner else {
+                return false
+            }
+            try await requestExpectingNoContent(path: "\(runnersPath())/\(runner.id)", method: "DELETE", token: accessToken)
+            return true
         }
-        try await requestExpectingNoContent(path: "\(runnersPath())/\(runner.id)", method: "DELETE", token: accessToken)
-        return true
     }
 
     enum RunnerLookup: Equatable, Sendable {
@@ -93,11 +99,15 @@ struct GitHubService: Sendable {
     }
 
     func runnerStatus(named name: String) async throws -> RunnerLookup {
+        try await withInstallationToken { try await fetchRunnerStatus(named: name, token: $0) }
+    }
+
+    private func withInstallationToken<T: Sendable>(_ body: (String) async throws -> T) async throws -> T {
         do {
-            return try await fetchRunnerStatus(named: name, token: cachedInstallationToken())
+            return try await body(cachedInstallationToken())
         } catch let GitHubServiceError.httpError(status, _) where status == 401 {
             await tokenCache.invalidateToken()
-            return try await fetchRunnerStatus(named: name, token: cachedInstallationToken())
+            return try await body(cachedInstallationToken())
         }
     }
 
@@ -144,7 +154,7 @@ struct GitHubService: Sendable {
         return .registered(RunnerStatus(connection: connection, busy: runner.busy))
     }
 
-    private func findRunner(named name: String, token: String, requireVerifiedAbsence: Bool = true) async throws -> RunnersListResponse.Runner? {
+    private func findRunner(named name: String, token: String) async throws -> RunnersListResponse.Runner? {
         let list: RunnersListResponse = try await request(
             path: runnerLookupPath(named: name),
             method: "GET",
@@ -153,7 +163,7 @@ struct GitHubService: Sendable {
         if let runner = list.runners.first(where: { $0.name == name }) {
             return runner
         }
-        if requireVerifiedAbsence, list.totalCount != list.runners.count {
+        if list.totalCount != list.runners.count {
             throw GitHubServiceError.unverifiedRunnerAbsence(returned: list.runners.count, totalCount: list.totalCount)
         }
         return nil
@@ -174,18 +184,16 @@ struct GitHubService: Sendable {
         return response.id
     }
 
-    private func installationAccessToken(installationId: Int) async throws -> String {
-        let token = try auth.token(now: Date())
-        let response: AccessTokenResponse = try await request(path: "/app/installations/\(installationId)/access_tokens", method: "POST", token: token)
-        return response.token
-    }
-
-    private func request<T: Decodable>(path: String, method: String, token: String) async throws -> T {
-        let data = try await performRequest(path: path, method: method, token: token)
+    private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(T.self, from: data)
+        return decoder
+    }()
+
+    private func request<T: Decodable>(path: String, method: String, token: String) async throws -> T {
+        let data = try await performRequest(path: path, method: method, token: token)
+        return try Self.decoder.decode(T.self, from: data)
     }
 
     private func requestExpectingNoContent(path: String, method: String, token: String) async throws {
