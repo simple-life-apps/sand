@@ -680,8 +680,13 @@ struct Runner: Sendable {
             threshold: threshold,
             pollInterval: Self.offlinePollInterval,
             poll: { try await github.runnerStatus(named: runnerName) },
-            onRecycle: { _, message in
-                await state.markFailed(.runnerOffline(message))
+            onRecycle: { cause, message in
+                switch cause {
+                case .offlinePastThreshold:
+                    await state.markFailed(.runnerOffline(message))
+                case .missing:
+                    await state.markFailed(.runnerMissing(message))
+                }
                 await control.terminateProvisioning()
             },
             logger: logger
@@ -931,6 +936,8 @@ struct Runner: Sendable {
             return .healthCheckFailed(message)
         case let .runnerOffline(message):
             return .runnerOffline(message)
+        case let .runnerMissing(message):
+            return .runnerMissing(message)
         }
     }
 
@@ -1119,10 +1126,11 @@ struct Runner: Sendable {
 enum MonitorFailure: Sendable, Equatable {
     case healthCheck(String)
     case runnerOffline(String)
+    case runnerMissing(String)
 
     var message: String {
         switch self {
-        case let .healthCheck(message), let .runnerOffline(message):
+        case let .healthCheck(message), let .runnerOffline(message), let .runnerMissing(message):
             return message
         }
     }

@@ -49,6 +49,23 @@ final class RestartBackoffTests: XCTestCase {
         XCTAssertEqual(third, 4)
     }
 
+    func testRunnerMissingReasonDescription() {
+        let reason = RestartReason.runnerMissing("runner r-1 no longer registered on GitHub")
+        XCTAssertEqual(String(describing: reason), "runner missing: runner r-1 no longer registered on GitHub")
+        XCTAssertEqual(reason.backoffKey, "runnerMissing")
+    }
+
+    func testRunnerMissingEscalatesAcrossBootsButResetsAgainstOffline() async {
+        let policy = RestartBackoffPolicy(baseDelay: 1, maxDelay: 60, multiplier: 2)
+        let backoff = RestartBackoff(policy: policy)
+        let first = await backoff.schedule(reason: .runnerMissing("runner r-1-a3f9c no longer registered on GitHub"))
+        let second = await backoff.schedule(reason: .runnerMissing("runner r-1-7b21e no longer registered on GitHub"))
+        let third = await backoff.schedule(reason: .runnerOffline("runner r-1-fe004 offline on GitHub past threshold"))
+        XCTAssertEqual(first, 1)
+        XCTAssertEqual(second, 2)
+        XCTAssertEqual(third, 1, "a cause change resets the attempt count; the keys must not share an escalation counter")
+    }
+
     func testRunnerOfflineReasonDescriptionAndEquality() {
         let reason = RestartReason.runnerOffline("runner r-1 offline on GitHub for 600s+")
         XCTAssertEqual(String(describing: reason), "runner offline: runner r-1 offline on GitHub for 600s+")
