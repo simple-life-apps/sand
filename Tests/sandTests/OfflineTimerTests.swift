@@ -43,6 +43,19 @@ struct OfflineTimerTests {
         #expect(timer.observe(.offline, at: start.advanced(by: .seconds(210))) == .thresholdReached)
     }
 
+    @Test func subIntervalThresholdTakesEffectAtOnePollIntervalAsTheValidatorClaims() {
+        var timer = OfflineTimer(threshold: .seconds(30))
+        #expect(timer.observe(.offline, at: start) == .belowThreshold)
+        #expect(timer.observe(.offline, at: start.advanced(by: .seconds(60))) == .thresholdReached)
+    }
+
+    @Test func betweenIntervalsThresholdRoundsUpToTheNextPollAsTheValidatorClaims() {
+        var timer = OfflineTimer(threshold: .seconds(90))
+        #expect(timer.observe(.offline, at: start) == .belowThreshold)
+        #expect(timer.observe(.offline, at: start.advanced(by: .seconds(60))) == .belowThreshold)
+        #expect(timer.observe(.offline, at: start.advanced(by: .seconds(120))) == .thresholdReached)
+    }
+
     @Test func zeroThresholdFiresOnFirstOffline() {
         var timer = OfflineTimer(threshold: .zero)
         #expect(timer.observe(.offline, at: start) == .thresholdReached)

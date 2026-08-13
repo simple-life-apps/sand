@@ -337,7 +337,8 @@ final class GitHubServiceTests: XCTestCase {
         do {
             _ = try await service.runnerStatus(named: "r-a3f9c")
             XCTFail("expected 401 to propagate after one retry")
-        } catch {
+        } catch let GitHubServiceError.httpError(status, _) {
+            XCTAssertEqual(status, 401)
         }
         let authRequests = session.requests.filter { $0.url?.path.contains("access_tokens") == true }
         let statusRequests = session.requests.filter { $0.url?.path == "/orgs/org/actions/runners" }

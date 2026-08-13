@@ -674,7 +674,7 @@ struct Runner: Sendable {
         control: RunnerControl,
         state: MonitorFailureState
     ) -> OfflineMonitor {
-        logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(threshold.components.seconds)s, poll=60s)")
+        logger.info("offline monitor active (runner=\(runnerName), recycleAfterOffline=\(threshold.components.seconds)s, poll=\(Self.offlinePollInterval.components.seconds)s)")
         return OfflineMonitor(
             runnerName: runnerName,
             threshold: threshold,

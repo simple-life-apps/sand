@@ -86,6 +86,16 @@ final class RestartBackoffTests: XCTestCase {
         XCTAssertEqual(repeated, 2)
     }
 
+    func testCleanExitBetweenFailuresResetsTheirEscalation() async {
+        let policy = RestartBackoffPolicy(baseDelay: 1, maxDelay: 60, multiplier: 2)
+        let backoff = RestartBackoff(policy: policy)
+        _ = await backoff.schedule(reason: .sshNotReady)
+        _ = await backoff.schedule(reason: .sshNotReady)
+        _ = await backoff.schedule(reason: .provisionerExited)
+        let afterCleanCycle = await backoff.schedule(reason: .sshNotReady)
+        XCTAssertEqual(afterCleanCycle, 1, "a full successful job cycle between failures means the failure is not consecutive")
+    }
+
     func testRunnerOfflineReasonDescriptionAndEquality() {
         let reason = RestartReason.runnerOffline("runner r-1 offline on GitHub for 600s+")
         XCTAssertEqual(String(describing: reason), "runner offline: runner r-1 offline on GitHub for 600s+")
