@@ -19,8 +19,7 @@ sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.InternetS
 ## Install
 
 ```
-brew tap khoi/sand
-brew install sand
+brew install simple-life-apps/sand/sand
 ```
 
 ## Usage

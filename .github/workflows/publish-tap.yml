@@ -1,88 +1,51 @@
-name: Publish Tap
+name: Release
 on:
   push:
-    tags:
-      - "v*"
-env:
-  HOMEBREW_NO_AUTO_UPDATE: "1"
+    branches:
+      - main
+    paths-ignore:
+      - "Formula/**"
+permissions:
+  contents: write
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
-  bottle:
-    strategy:
-      matrix:
-        macos:
-          - macos-15
-          - macos-26
-    runs-on: ${{ matrix.macos }}
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: swift-actions/setup-swift@v2
         with:
-          swift-version: "6.2"
-      - run: echo "HOMEBREW_SWIFT=$(which swift)" >> "$GITHUB_ENV"
-      - env:
-          TAG: ${{ github.ref_name }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          fetch-depth: 0
+      - id: version
         run: |
           set -euo pipefail
-          URL="https://github.com/khoi/sand/archive/refs/tags/${TAG}.tar.gz"
-          SHA=$(curl -Ls "$URL" | shasum -a 256 | awk '{print $1}')
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/khoi/homebrew-sand.git" tap
-          mkdir -p tap/Formula
-          cp Formula/sand.rb tap/Formula/sand.rb
-          brew tap khoi/sand "$PWD/tap"
-          TAP_REPO="$(brew --repo khoi/sand)"
-          FORMULA_PATH="${TAP_REPO}/Formula/sand.rb"
-          URL="$URL" SHA="$SHA" FORMULA_PATH="$FORMULA_PATH" python3 .github/workflows/patch-formula-url.py
-          brew install --build-from-source openai/tools/tart
-          brew install --build-bottle khoi/sand/sand
-          brew bottle --json --root-url "https://github.com/khoi/sand/releases/download/${TAG}" khoi/sand/sand
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bottle-${{ matrix.macos }}
-          path: |
-            *.bottle*.tar.gz
-            *.bottle*.json
-  publish:
-    needs: bottle
-    runs-on: macos-15
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - env:
-          TAG: ${{ github.ref_name }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if ! gh release view "${TAG}" -R "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
-            gh release create "${TAG}" --generate-notes -R "${GITHUB_REPOSITORY}"
+          latest="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "$latest" ]; then
+            next="v1.5.0"
+          else
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            next="v${major}.${minor}.$((patch + 1))"
           fi
-          for path in artifacts/*.bottle*.tar.gz; do
-            base="$(basename "$path")"
-            renamed="${base/--/-}"
-            if [ "$renamed" != "$base" ]; then
-              mv "$path" "artifacts/$renamed"
-            fi
-          done
-          gh release upload "${TAG}" artifacts/*.bottle*.tar.gz --clobber
-          URL="https://github.com/khoi/sand/archive/refs/tags/${TAG}.tar.gz"
-          SHA=$(curl -Ls "$URL" | shasum -a 256 | awk '{print $1}')
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/khoi/homebrew-sand.git" tap
-          mkdir -p tap/Formula
-          cp Formula/sand.rb tap/Formula/sand.rb
-          brew tap khoi/sand "$PWD/tap"
-          FORMULA_PATH="$(brew --repo khoi/sand)/Formula/sand.rb"
-          URL="$URL" SHA="$SHA" FORMULA_PATH="$FORMULA_PATH" python3 .github/workflows/patch-formula-url.py
-          brew bottle --merge --write artifacts/*.bottle*.json
-          cp "$(brew --repo khoi/sand)/Formula/sand.rb" tap/Formula/sand.rb
-          git -C tap config user.name "github-actions"
-          git -C tap config user.email "github-actions@github.com"
-          git -C tap add Formula/sand.rb
-          git -C tap commit -m "Update sand ${TAG}" || exit 0
-          git -C tap remote set-url origin "https://x-access-token:${TAP_TOKEN}@github.com/khoi/homebrew-sand.git"
-          git -C tap push origin main
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag "$TAG"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" --generate-notes
+      - env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          SHA="$(curl -fsSL --retry 5 --retry-delay 5 "$URL" | shasum -a 256 | awk '{print $1}')"
+          URL="$URL" SHA="$SHA" FORMULA_PATH="Formula/sand.rb" python3 .github/workflows/patch-formula-url.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/sand.rb
+          git commit -m "Update formula to ${TAG}"
+          git push origin HEAD:main
