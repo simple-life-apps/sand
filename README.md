@@ -147,5 +147,5 @@ Full configurations keys can be found at [fixtures/sample_full_config.yml](fixtu
 
 ## Acknowledgements
 
-- https://github.com/cirruslabs/tart - doing all the heavy lifting interacting with VMs.
+- https://github.com/openai/tart - doing all the heavy lifting interacting with VMs.
 - https://github.com/traderepublic/Cilicon - sand is heavily inspired by Cilicon

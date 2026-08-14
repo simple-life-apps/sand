@@ -3,7 +3,7 @@ class Sand < Formula
   homepage "https://github.com/khoi/sand"
   head "https://github.com/simple-life-apps/sand.git", branch: "main"
 
-  depends_on "cirruslabs/cli/tart"
+  depends_on "openai/tools/tart"
   depends_on :macos
   depends_on "sshpass"
 
