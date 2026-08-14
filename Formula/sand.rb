@@ -1,6 +1,8 @@
 class Sand < Formula
   desc "Run ephemeral macOS VMs via Tart and provision inside each VM"
   homepage "https://github.com/simple-life-apps/homebrew-sand"
+  url "https://github.com/simple-life-apps/homebrew-sand/archive/refs/tags/v1.5.0.tar.gz"
+  sha256 "355b4e3a26975ea17ccb3a5f7054540b32dcf86d127f3489cad63cc57d66e244"
   head "https://github.com/simple-life-apps/homebrew-sand.git", branch: "main"
 
   depends_on "openai/tools/tart"
